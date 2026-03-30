@@ -64,6 +64,12 @@ def build_blockers(data: dict) -> list[Blocker]:
     if data.get("isDraft", False):
         blockers.append(Blocker(type=BlockerType.IS_DRAFT, description="PR is a draft"))
 
+    # BLOCKED with no other detected blockers → branch protection rules
+    if merge_state == "BLOCKED" and not blockers:
+        blockers.append(
+            Blocker(type=BlockerType.BRANCH_PROTECTION, description="Branch protection rules are blocking merge")
+        )
+
     return blockers
 
 

@@ -115,6 +115,27 @@ class TestBuildBlockers:
         assert BlockerType.BEHIND_BASE in types
         assert BlockerType.FAILING_CHECKS in types
 
+    def test_blocked_no_visible_cause(self):
+        """BLOCKED with no reviews/checks/conflicts → BRANCH_PROTECTION."""
+        data = {
+            "mergeStateStatus": "BLOCKED",
+            "mergeable": "MERGEABLE",
+            "reviewDecision": "",
+            "isDraft": False,
+            "statusCheckRollup": [],
+        }
+        blockers = build_blockers(data)
+        assert len(blockers) == 1
+        assert blockers[0].type == BlockerType.BRANCH_PROTECTION
+
+    def test_blocked_with_review_not_branch_protection(self):
+        """BLOCKED with review required → MISSING_REVIEWS, not BRANCH_PROTECTION."""
+        data = load_fixture("pr_view_blocked.json")
+        blockers = build_blockers(data)
+        types = {b.type for b in blockers}
+        assert BlockerType.MISSING_REVIEWS in types
+        assert BlockerType.BRANCH_PROTECTION not in types
+
 
 class TestCheckPr:
     def test_normal_flow(self, sample_pr):

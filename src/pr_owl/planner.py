@@ -92,10 +92,12 @@ def plan_remediation(report: HealthReport) -> RemediationPlan:
         summary = f"{report.pr.repo}#{report.pr.number}: Rebase first, then investigate CI failures."
     elif len(report.blockers) == 1:
         summary = f"{report.pr.repo}#{report.pr.number}: {report.blockers[0].description}."
-    else:
+    elif report.blockers:
         summary = (
             f"{report.pr.repo}#{report.pr.number}: "
             f"{len(report.blockers)} blocker(s) — {', '.join(b.description for b in report.blockers)}."
         )
+    else:
+        summary = f"{report.pr.repo}#{report.pr.number}: Status is {report.status.value}."
 
     return RemediationPlan(report=report, steps=steps, summary=summary)
