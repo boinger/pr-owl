@@ -6,6 +6,18 @@ pr-owl discovers all your open PRs across repos, checks their health (merge conf
 
 ## Install
 
+From a clone:
+
+```bash
+git clone https://github.com/boinger/pr-owl.git
+cd pr-owl
+./setup
+```
+
+This installs the `pr-owl` CLI via `uv tool` and registers the Claude Code skill (`/pr-owl`).
+
+Or install just the CLI without cloning:
+
 ```bash
 uv tool install --from git+https://github.com/boinger/pr-owl.git pr-owl
 ```

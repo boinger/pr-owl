@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
+SKILL_NAME="pr-owl"
+SKILL_DIR="$HOME/.claude/skills/$SKILL_NAME"
+SKILL_SRC="$REPO_DIR/skills/SKILL.md"
+
+echo "pr-owl setup"
+echo "============"
+
+# Install CLI tool
+echo ""
+echo "Installing pr-owl CLI..."
+if command -v pr-owl &>/dev/null; then
+    echo "  pr-owl already installed, reinstalling..."
+    uv tool install --force --from "$REPO_DIR" pr-owl
+else
+    uv tool install --from "$REPO_DIR" pr-owl
+fi
+echo "  ✓ pr-owl CLI installed"
+
+# Install Claude Code skill
+echo ""
+echo "Installing Claude Code skill..."
+mkdir -p "$SKILL_DIR"
+
+if [ -L "$SKILL_DIR/SKILL.md" ]; then
+    existing="$(readlink "$SKILL_DIR/SKILL.md")"
+    if [ "$existing" = "$SKILL_SRC" ]; then
+        echo "  ✓ Skill already linked (no change)"
+    else
+        ln -sf "$SKILL_SRC" "$SKILL_DIR/SKILL.md"
+        echo "  ✓ Skill symlink updated (was: $existing)"
+    fi
+elif [ -f "$SKILL_DIR/SKILL.md" ]; then
+    echo "  ⚠ $SKILL_DIR/SKILL.md exists as a regular file, replacing with symlink"
+    ln -sf "$SKILL_SRC" "$SKILL_DIR/SKILL.md"
+    echo "  ✓ Skill symlinked"
+else
+    ln -sf "$SKILL_SRC" "$SKILL_DIR/SKILL.md"
+    echo "  ✓ Skill symlinked"
+fi
+
+# Verify
+echo ""
+echo "Verifying..."
+if command -v pr-owl &>/dev/null; then
+    echo "  ✓ pr-owl CLI: $(which pr-owl)"
+else
+    echo "  ✗ pr-owl CLI not found on PATH"
+    exit 1
+fi
+
+if [ -L "$SKILL_DIR/SKILL.md" ]; then
+    echo "  ✓ Skill: $SKILL_DIR/SKILL.md -> $(readlink "$SKILL_DIR/SKILL.md")"
+else
+    echo "  ✗ Skill symlink not found"
+    exit 1
+fi
+
+echo ""
+echo "Done. Use /pr-owl in Claude Code or run 'pr-owl audit' from the terminal."

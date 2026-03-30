@@ -1,4 +1,4 @@
-.PHONY: venv install dev run test test-cov lint format format-fix format-check version build clean pre-commit integration-test
+.PHONY: venv install dev run test test-cov lint format format-fix format-check version build clean pre-commit integration-test setup
 
 venv:
 	uv venv
@@ -47,3 +47,6 @@ clean:
 	find . -name '*.pyc' -delete 2>/dev/null || true
 
 pre-commit: format lint test
+
+setup:
+	./setup
