@@ -1,0 +1,25 @@
+{
+  "number": 42,
+  "title": "Add widget support",
+  "url": "https://github.com/acme/repo/pull/42",
+  "isDraft": false,
+  "mergeStateStatus": "CLEAN",
+  "mergeable": "MERGEABLE",
+  "reviewDecision": "APPROVED",
+  "headRefName": "feature/widget",
+  "baseRefName": "main",
+  "statusCheckRollup": [
+    {
+      "__typename": "StatusContext",
+      "context": "cla/google",
+      "state": "SUCCESS",
+      "targetUrl": "https://cla.developers.google.com/status"
+    },
+    {
+      "__typename": "StatusContext",
+      "context": "ci/external",
+      "state": "FAILURE",
+      "targetUrl": "https://ci.external.com/build/789"
+    }
+  ]
+}

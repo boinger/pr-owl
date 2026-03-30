@@ -1,0 +1,27 @@
+{
+  "number": 42,
+  "title": "Add widget support",
+  "url": "https://github.com/acme/repo/pull/42",
+  "isDraft": false,
+  "mergeStateStatus": "UNSTABLE",
+  "mergeable": "MERGEABLE",
+  "reviewDecision": "APPROVED",
+  "headRefName": "feature/widget",
+  "baseRefName": "main",
+  "statusCheckRollup": [
+    {
+      "__typename": "CheckRun",
+      "name": "ci/build",
+      "status": "COMPLETED",
+      "conclusion": "SUCCESS",
+      "workflowName": "CI",
+      "detailsUrl": "https://github.com/acme/repo/actions/runs/123"
+    },
+    {
+      "__typename": "StatusContext",
+      "context": "ci/external",
+      "state": "FAILURE",
+      "targetUrl": "https://ci.external.com/build/789"
+    }
+  ]
+}

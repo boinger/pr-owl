@@ -1,0 +1,12 @@
+{
+  "number": 42,
+  "title": "Add widget support",
+  "url": "https://github.com/acme/repo/pull/42",
+  "isDraft": true,
+  "mergeStateStatus": "BLOCKED",
+  "mergeable": "MERGEABLE",
+  "reviewDecision": "",
+  "headRefName": "feature/widget",
+  "baseRefName": "main",
+  "statusCheckRollup": []
+}

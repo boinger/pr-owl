@@ -1,0 +1,141 @@
+"""Tests for pr_owl.planner."""
+
+from __future__ import annotations
+
+from pr_owl.models import (
+    Blocker,
+    BlockerType,
+    CICheck,
+    HealthReport,
+    MergeStatus,
+)
+from pr_owl.planner import plan_remediation
+
+
+class TestPlanRemediation:
+    def test_ready_pr(self, sample_pr):
+        report = HealthReport(pr=sample_pr, status=MergeStatus.READY)
+        plan = plan_remediation(report)
+        assert not plan.steps
+        assert "Ready to merge" in plan.summary
+
+    def test_behind(self, sample_pr):
+        report = HealthReport(
+            pr=sample_pr,
+            status=MergeStatus.BEHIND,
+            blockers=[Blocker(type=BlockerType.BEHIND_BASE, description="Behind base branch")],
+            base_ref="main",
+        )
+        plan = plan_remediation(report)
+        assert len(plan.steps) >= 2
+        assert plan.steps[0].automatable
+        assert "update-branch" in plan.steps[0].command
+        assert not plan.steps[1].automatable  # fallback local rebase
+
+    def test_conflicts(self, sample_pr):
+        report = HealthReport(
+            pr=sample_pr,
+            status=MergeStatus.CONFLICTS,
+            blockers=[Blocker(type=BlockerType.HAS_CONFLICTS, description="Merge conflicts")],
+            base_ref="main",
+        )
+        plan = plan_remediation(report)
+        assert any("rebase" in s.command.lower() for s in plan.steps if s.command)
+        assert all(not s.automatable for s in plan.steps)
+
+    def test_blocked_reviews(self, sample_pr):
+        report = HealthReport(
+            pr=sample_pr,
+            status=MergeStatus.BLOCKED,
+            blockers=[Blocker(type=BlockerType.MISSING_REVIEWS, description="Review required")],
+            review_decision="REVIEW_REQUIRED",
+        )
+        plan = plan_remediation(report)
+        assert any("review" in s.description.lower() for s in plan.steps)
+
+    def test_ci_failing(self, sample_pr):
+        failing_check = CICheck(
+            name="ci/lint",
+            status="COMPLETED",
+            conclusion="FAILURE",
+            workflow_name="CI",
+            details_url="https://example.com/run/456",
+        )
+        report = HealthReport(
+            pr=sample_pr,
+            status=MergeStatus.CI_FAILING,
+            blockers=[Blocker(type=BlockerType.FAILING_CHECKS, description="1 check failing", details=["ci/lint"])],
+            checks=[failing_check],
+        )
+        plan = plan_remediation(report)
+        assert any("ci/lint" in s.description for s in plan.steps)
+
+    def test_draft(self, sample_pr):
+        report = HealthReport(
+            pr=sample_pr,
+            status=MergeStatus.DRAFT,
+            blockers=[Blocker(type=BlockerType.IS_DRAFT, description="PR is a draft")],
+        )
+        plan = plan_remediation(report)
+        assert any("draft" in s.description.lower() for s in plan.steps)
+
+    def test_compound_behind_and_ci(self, sample_pr):
+        report = HealthReport(
+            pr=sample_pr,
+            status=MergeStatus.BEHIND,
+            blockers=[
+                Blocker(type=BlockerType.BEHIND_BASE, description="Behind base branch"),
+                Blocker(type=BlockerType.FAILING_CHECKS, description="1 check failing", details=["ci/lint"]),
+            ],
+            checks=[
+                CICheck(
+                    name="ci/lint",
+                    status="COMPLETED",
+                    conclusion="FAILURE",
+                    workflow_name="CI",
+                    details_url="",
+                )
+            ],
+            base_ref="main",
+        )
+        plan = plan_remediation(report)
+        assert "Rebase first" in plan.summary
+        # Has both update-branch and CI investigation steps
+        has_rebase = any("update-branch" in s.command for s in plan.steps if s.command)
+        has_ci = any("ci/lint" in s.description for s in plan.steps)
+        assert has_rebase and has_ci
+
+    def test_compound_blocked_and_ci(self, sample_pr):
+        report = HealthReport(
+            pr=sample_pr,
+            status=MergeStatus.BLOCKED,
+            blockers=[
+                Blocker(type=BlockerType.MISSING_REVIEWS, description="Review required"),
+                Blocker(type=BlockerType.FAILING_CHECKS, description="1 check failing", details=["ci/lint"]),
+            ],
+            review_decision="REVIEW_REQUIRED",
+            checks=[
+                CICheck(
+                    name="ci/lint",
+                    status="COMPLETED",
+                    conclusion="FAILURE",
+                    workflow_name="CI",
+                    details_url="",
+                )
+            ],
+        )
+        plan = plan_remediation(report)
+        assert len(plan.report.blockers) == 2
+        assert "2 blocker" in plan.summary
+
+    def test_automatable_flags(self, sample_pr):
+        report = HealthReport(
+            pr=sample_pr,
+            status=MergeStatus.BEHIND,
+            blockers=[Blocker(type=BlockerType.BEHIND_BASE, description="Behind")],
+            base_ref="main",
+        )
+        plan = plan_remediation(report)
+        automatable = [s for s in plan.steps if s.automatable]
+        assert len(automatable) >= 1
+        assert "update-branch" in automatable[0].command
