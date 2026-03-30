@@ -1,0 +1,90 @@
+# pr-owl
+
+> Audit outbound GitHub PRs for mergeability and guide remediation.
+
+pr-owl discovers all your open PRs across GitHub repos, classifies their merge health, and produces actionable remediation plans. It auto-fixes PRs that are simply behind their base branch and provides step-by-step guidance for conflicts, failing CI, and blocked reviews.
+
+## How it works
+
+All GitHub interaction goes through the `gh` CLI via subprocess (never shell=True). The pipeline is:
+
+1. **Discover** — `gh search prs --author=@me` finds all open PRs
+2. **Check** — `gh pr view` per PR, run concurrently via ThreadPoolExecutor
+3. **Classify** — maps GitHub's `mergeStateStatus` to: READY, BEHIND, CONFLICTS, BLOCKED, CI_FAILING, DRAFT, UNKNOWN
+4. **Blockers** — inspects all fields independently to build a compound blocker list (a PR can be BEHIND + CI_FAILING)
+5. **Plan** — generates remediation steps for each blocker
+6. **Fix** — auto-rebases BEHIND PRs via `gh pr update-branch --rebase` (only this status is automatable)
+
+## Architecture
+
+```
+cli.py → discovery.py → checker.py → planner.py → fixer.py → output.py
+                              ↑
+                           gh.py (only module touching subprocess)
+```
+
+- `models.py` — MergeStatus enum, BlockerType enum, PRInfo, HealthReport, CICheck, RemediationPlan, FixResult dataclasses
+- `exceptions.py` — PrOwlError hierarchy (GhNotFoundError, GhAuthError, GhCommandError, GhRateLimitError, PrNotFoundError, FixError)
+- `gh.py` — subprocess wrapper with `_run()` and `_check_errors()` helpers; handles rate limits, deleted repos, conflict-on-rebase, permission-denied
+- `checker.py` — `classify_status()` maps all 8 GitHub mergeStateStatus values; `_parse_checks()` normalizes both CheckRun and StatusContext from statusCheckRollup; `build_blockers()` detects compound issues including implicit branch protection
+- `output.py` — Rich table (status-colored, sorted by severity), JSON (to stdout), detailed remediation plans
+
+## CLI
+
+```
+pr-owl audit [OPTIONS]
+
+--repo/-R TEXT       Scope to owner/repo
+--org TEXT           Scope to organization
+--stale-days INT     Only show PRs inactive for N+ days
+--status TEXT        Filter by MergeStatus value
+--json               JSON output to stdout
+--details            Show detailed blockers and remediation steps
+--fix                Auto-fix BEHIND PRs (rebase)
+--yes/-y             Skip confirmation for --fix
+--dry-run            Show what --fix would do
+--workers INT        Concurrent health check workers (default 5, 1=serial)
+--verbose/-v         Debug logging
+```
+
+## Status classification
+
+| GitHub mergeStateStatus | pr-owl MergeStatus |
+|------------------------|-------------------|
+| CLEAN                  | READY             |
+| BEHIND                 | BEHIND            |
+| DIRTY                  | CONFLICTS         |
+| BLOCKED                | BLOCKED           |
+| UNSTABLE               | CI_FAILING        |
+| HAS_HOOKS              | READY             |
+| isDraft=true           | DRAFT             |
+| anything else          | UNKNOWN           |
+
+## Blocker types
+
+BEHIND_BASE, HAS_CONFLICTS, MISSING_REVIEWS, FAILING_CHECKS, IS_DRAFT, BRANCH_PROTECTION, UNKNOWN_BLOCKER
+
+A PR has a primary status (for display) and a blockers list (for remediation). BLOCKED with no visible cause infers BRANCH_PROTECTION.
+
+## Install
+
+```bash
+git clone https://github.com/boinger/pr-owl.git && cd pr-owl && ./setup
+```
+
+`./setup` installs the CLI via `uv tool` and registers the Claude Code skill (`/pr-owl`).
+
+## Requirements
+
+- Python >=3.11
+- GitHub CLI (`gh`) installed and authenticated
+- uv package manager
+
+## Development
+
+```bash
+make dev          # install with dev deps
+make test         # 103 unit tests
+make pre-commit   # format + lint + test
+make setup        # install CLI + skill
+```
