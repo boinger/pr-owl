@@ -20,7 +20,7 @@ pr-owl audit
 pr-owl audit --json
 
 # Detailed remediation plans
-pr-owl audit --plan
+pr-owl audit --details
 
 # Only show PRs inactive for 7+ days
 pr-owl audit --stale-days 7

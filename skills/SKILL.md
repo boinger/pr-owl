@@ -40,7 +40,7 @@ Adapt the command to the user's request:
 - "just show stale PRs" → `pr-owl audit --stale-days 14`
 - "check this repo" → `pr-owl audit --repo owner/repo`
 - "fix all behind" → `pr-owl audit --fix --yes`
-- "what needs attention" → `pr-owl audit --plan`
+- "what needs attention" → `pr-owl audit --details`
 
 ### 2. Interpret
 

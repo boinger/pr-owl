@@ -45,7 +45,7 @@ def cli(ctx: click.Context, verbose: bool) -> None:
 @click.option("--stale-days", type=int, default=None, help="Only show PRs inactive for N+ days.")
 @click.option("--status", "status_filter", default="", help="Filter by MergeStatus value.")
 @click.option("--json", "json_output", is_flag=True, help="JSON output to stdout.")
-@click.option("--plan", "show_plan", is_flag=True, help="Show detailed remediation plans.")
+@click.option("--details", "show_plan", is_flag=True, help="Show detailed blockers and remediation steps.")
 @click.option("--fix", is_flag=True, help="Auto-fix BEHIND PRs (rebase).")
 @click.option("--yes", "-y", is_flag=True, help="Skip confirmation for --fix.")
 @click.option("--dry-run", is_flag=True, help="Show what --fix would do.")
@@ -142,7 +142,11 @@ def audit(
     if fix:
         fixable = [p for p in plans if any(b.type.value == "BEHIND_BASE" for b in p.report.blockers)]
         if not fixable:
-            console.print("\n[dim]No BEHIND PRs to fix.[/dim]")
+            conflicts = sum(1 for r in reports if r.status == MergeStatus.CONFLICTS)
+            msg = "--fix can only auto-rebase PRs that are behind their base branch (no conflicts)."
+            if conflicts:
+                msg += f" {conflicts} PR(s) have merge conflicts that require manual resolution."
+            console.print(f"\n[dim]{msg}[/dim]")
             return
 
         if not yes and not dry_run:
