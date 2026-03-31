@@ -28,19 +28,21 @@ def ensure_gh() -> str:
 
 def check_auth() -> None:
     """Verify gh is authenticated or raise GhAuthError."""
-    result = subprocess.run(
-        ["gh", "auth", "status"],
-        capture_output=True,
-        text=True,
-    )
+    result = _run(["gh", "auth", "status"])
     if result.returncode != 0:
         raise GhAuthError(f"gh is not authenticated. Run 'gh auth login' first.\n{result.stderr}")
+
+
+_SUBPROCESS_TIMEOUT = 30  # seconds
 
 
 def _run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
     """Run a command and return the CompletedProcess. Centralizes subprocess usage."""
     logger.debug("Running: %s", " ".join(cmd))
-    return subprocess.run(cmd, capture_output=True, text=True)
+    try:
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=_SUBPROCESS_TIMEOUT)
+    except subprocess.TimeoutExpired as exc:
+        raise GhCommandError(cmd, -1, f"Command timed out after {_SUBPROCESS_TIMEOUT}s") from exc
 
 
 def _check_errors(cmd: list[str], result: subprocess.CompletedProcess[str]) -> None:

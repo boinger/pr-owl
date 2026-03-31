@@ -128,6 +128,24 @@ class TestPlanRemediation:
         assert len(plan.report.blockers) == 2
         assert "2 blocker" in plan.summary
 
+    def test_branch_protection_blocker(self, sample_pr):
+        report = HealthReport(
+            pr=sample_pr,
+            status=MergeStatus.BLOCKED,
+            blockers=[Blocker(type=BlockerType.BRANCH_PROTECTION, description="Branch protection rules")],
+        )
+        plan = plan_remediation(report)
+        assert any("branch protection" in s.description.lower() for s in plan.steps)
+
+    def test_unknown_blocker(self, sample_pr):
+        report = HealthReport(
+            pr=sample_pr,
+            status=MergeStatus.UNKNOWN,
+            blockers=[Blocker(type=BlockerType.UNKNOWN_BLOCKER, description="Something unexpected")],
+        )
+        plan = plan_remediation(report)
+        assert any("unknown" in s.description.lower() for s in plan.steps)
+
     def test_automatable_flags(self, sample_pr):
         report = HealthReport(
             pr=sample_pr,

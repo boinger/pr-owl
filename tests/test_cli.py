@@ -7,8 +7,10 @@ from unittest.mock import patch
 from click.testing import CliRunner
 
 from pr_owl.cli import cli
-from pr_owl.exceptions import GhCommandError
+from pr_owl.exceptions import GhCommandError, GhNotFoundError
 from pr_owl.models import (
+    Blocker,
+    BlockerType,
     HealthReport,
     MergeStatus,
     PRInfo,
@@ -98,6 +100,59 @@ class TestAuditCommand:
         ]
         with patches[0], patches[1], patches[2], patches[3]:
             result = runner.invoke(cli, ["audit"])
+        assert result.exit_code == 0
+
+    def test_preflight_gh_not_found(self):
+        """Missing gh CLI exits with code 1."""
+        with patch("pr_owl.cli.gh.ensure_gh", side_effect=GhNotFoundError("gh not found")):
+            result = runner.invoke(cli, ["audit"])
+        assert result.exit_code == 1
+
+    def test_status_filter_valid(self):
+        pr = _sample_pr()
+        ready_report = HealthReport(pr=pr, status=MergeStatus.READY)
+        behind_pr = _sample_pr(number=2)
+        behind_report = HealthReport(pr=behind_pr, status=MergeStatus.BEHIND)
+
+        patches = _mock_preflight() + [
+            patch("pr_owl.cli.discover_prs", return_value=[pr, behind_pr]),
+            patch("pr_owl.cli.check_pr", side_effect=[ready_report, behind_report]),
+        ]
+        with patches[0], patches[1], patches[2], patches[3], patches[4]:
+            result = runner.invoke(cli, ["audit", "--status", "READY", "--json"])
+        assert result.exit_code == 0
+        import json
+
+        data = json.loads(result.output)
+        assert len(data) == 1
+        assert data[0]["status"] == "READY"
+
+    def test_status_filter_invalid(self):
+        pr = _sample_pr()
+        report = HealthReport(pr=pr, status=MergeStatus.READY)
+
+        patches = _mock_preflight() + [
+            patch("pr_owl.cli.discover_prs", return_value=[pr]),
+            patch("pr_owl.cli.check_pr", return_value=report),
+        ]
+        with patches[0], patches[1], patches[2], patches[3], patches[4]:
+            result = runner.invoke(cli, ["audit", "--status", "BOGUS"])
+        assert result.exit_code == 1
+
+    def test_details_flag(self):
+        pr = _sample_pr()
+        report = HealthReport(
+            pr=pr,
+            status=MergeStatus.BEHIND,
+            blockers=[Blocker(type=BlockerType.BEHIND_BASE, description="Branch is behind")],
+        )
+
+        patches = _mock_preflight() + [
+            patch("pr_owl.cli.discover_prs", return_value=[pr]),
+            patch("pr_owl.cli.check_pr", return_value=report),
+        ]
+        with patches[0], patches[1], patches[2], patches[3], patches[4]:
+            result = runner.invoke(cli, ["audit", "--details"])
         assert result.exit_code == 0
 
     def test_version(self):
