@@ -71,6 +71,10 @@ git clone https://github.com/boinger/pr-owl.git && cd pr-owl && ./setup
 
 `./setup` installs the CLI via `uv tool` and registers the Claude Code skill (`/pr-owl`).
 
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md). Run `make pre-commit` before opening a PR. Report security issues via [GitHub private vulnerability reporting](https://github.com/boinger/pr-owl/security/advisories/new). Licensed under MIT.
+
 ## Requirements
 
 - Python >=3.11
