@@ -35,18 +35,17 @@ When the user wants to fix things, act. Don't audit-then-interpret-then-ask.
 
 ### Step 1: Get PR data
 
+Write JSON to temp file (NEVER dump to terminal), then summarize to yourself:
+
 ```bash
-pr-owl audit --json 2>/dev/null > /tmp/pr-owl-audit.json && python3 -c "
-import json
-data = json.load(open('/tmp/pr-owl-audit.json'))
-for r in data:
-    pr = r['pr']
-    bl = [b['type'] for b in r['blockers']]
-    print(f'{r[\"status\"]:12} {pr[\"repo\"]}#{pr[\"number\"]} head={r[\"head_ref\"]} base={r[\"base_ref\"]} head_repo={r[\"head_repo\"]} blockers={bl}')
-"
+pr-owl audit --json 2>/dev/null > /tmp/pr-owl-audit.json && echo "Audit saved"
 ```
 
+Then use the Read tool to read `/tmp/pr-owl-audit.json`. Parse it yourself to build the fix plan. Present a brief summary to the user of what you found and what you're about to do.
+
 ### Step 2: For each non-ready PR, fix it
+
+Process in this order: BEHIND first, then CONFLICTS/CI_FAILING, then report BLOCKED.
 
 **BEHIND** (remote, no clone needed):
 ```bash
@@ -55,8 +54,9 @@ gh pr update-branch <number> -R <repo> --rebase
 
 **CONFLICTS or CI_FAILING** (needs local clone):
 1. Find the clone (see Clone Discovery below)
-2. Run the Safety Checks
-3. Rebase:
+2. Run the Safety Checks (see Safety Protocol below)
+3. Determine remotes (see Remote Identification below)
+4. Rebase:
 ```bash
 ORIG_BRANCH=$(git rev-parse --abbrev-ref HEAD)
 git fetch <upstream_remote> <base_ref>
@@ -64,34 +64,67 @@ git fetch <push_remote> <head_ref>
 git checkout <head_ref> || git checkout -b <head_ref> <push_remote>/<head_ref>
 git rebase <upstream_remote>/<base_ref>
 ```
-4. If conflicts: read the conflicting files, resolve the conflict markers, `git add` each, `git rebase --continue`. Repeat until done.
-5. Push: `git push --force-with-lease <push_remote> <head_ref>`
-6. Restore: `git checkout $ORIG_BRANCH`
+5. If conflicts: read the conflicting files, resolve the conflict markers (`<<<<<<<`, `=======`, `>>>>>>>`), `git add` each resolved file, `git rebase --continue`. Repeat for each conflicting commit.
+6. Push: `git push --force-with-lease <push_remote> <head_ref>`
+7. Restore: `git checkout $ORIG_BRANCH`
 
-**CI transient failures** (e.g., `error_api` in check logs):
+**CI_FAILING with no conflicts** (branch is current but CI failed):
+Check if failures are transient or real:
 ```bash
-gh run rerun <run_id> -R <repo> --failed
+gh run view <run_id> -R <repo> --log-failed 2>&1 | tail -30
 ```
+- If logs show `error_api`, `rate limit`, `timeout`, or infrastructure errors → re-run failed jobs:
+  ```bash
+  gh run rerun <run_id> -R <repo> --failed
+  ```
+- If logs show real test failures (assertion errors, lint errors, type errors) → report to user with the specific failures. Don't re-run blindly.
 
-**BLOCKED** (reviews): report status, can't force reviews.
+**BLOCKED** (reviews): report status. Can't force reviews.
+
+### Step 3: Verify
+
+After fixing, re-run the audit to confirm:
+```bash
+pr-owl audit 2>&1
+```
+Report what changed: which PRs moved from CONFLICTS/CI_FAILING to READY or BEHIND.
 
 ### Clone Discovery
 
-1. Check `~/Projects/<repo-name>` (e.g., `~/Projects/loki` for `grafana/loki`)
-2. Verify with `git remote -v` that any remote URL contains `owner/repo`
-3. If not found, ask the user: "Where is your local clone of `<owner/repo>`?"
-4. Never `find /` or guess blindly.
+Search these paths in order for `owner/repo` (e.g., `grafana/loki`):
+1. `~/Projects/<owner>/<repo>` (owner-nested, e.g., give-back workspaces)
+2. `~/Projects/<repo>` (flat layout)
+3. Ask the user: "Where is your local clone of `owner/repo`?"
+
+For each candidate directory that exists, verify with `git remote -v` that ANY remote URL contains `owner/repo`. This handles forks correctly (clone has `origin → your-fork`, `upstream → base-repo`).
+
+Never `find /` or guess blindly. If no clone is found and the user doesn't know, skip that PR and report it.
+
+### Remote Identification
+
+A fork clone typically has two remotes:
+- `origin` → your fork (e.g., `boinger/loki`) — this is where you push
+- `upstream` → the base repo (e.g., `grafana/loki`) — this is what you rebase against
+
+To determine which is which:
+```bash
+git remote -v
+```
+- The remote whose URL contains the PR's `repo` field (the base repo, e.g., `grafana/loki`) is the **upstream remote** (rebase target)
+- The remote whose URL contains the PR's `head_repo` field (your fork, e.g., `boinger/loki`) is the **push remote**
+
+If both point to the same repo (same-repo PR, not a fork), use the same remote for both.
 
 ### Safety Protocol
 
 Before touching any clone:
-- `git status --porcelain` — if any output, stash or skip
-- Check for `.git/REBASE_HEAD`, `.git/MERGE_HEAD`, `.git/CHERRY_PICK_HEAD`, `.git/BISECT_LOG` — if any exist, abort or skip
-- Record current branch: `git rev-parse --abbrev-ref HEAD` — always restore when done
-- If rebase fails or is interrupted: `git rebase --abort` — never leave a repo mid-rebase
-- Push with `--force-with-lease` only (not `--force`)
-- Verify clone identity: `git remote -v` must show a URL matching the PR's repo
-- For fork PRs: push to the fork remote (origin), not upstream. The `head_repo` field in JSON tells you which remote to push to. Note: `headRepository.nameWithOwner` is always empty from `gh pr view` — use `headRepositoryOwner.login` + `headRepository.name` instead.
+- `git status --porcelain` — if any output, stash or skip (don't lose work)
+- Check for `.git/REBASE_HEAD`, `.git/MERGE_HEAD`, `.git/CHERRY_PICK_HEAD`, `.git/BISECT_LOG` — if any exist, an operation is in progress. Either abort it (`git rebase --abort`) or skip.
+- Record current branch: `ORIG_BRANCH=$(git rev-parse --abbrev-ref HEAD)` — always restore when done, even on failure
+- If rebase fails mid-way: `git rebase --abort` then `git checkout $ORIG_BRANCH` — never leave a repo mid-rebase
+- Push with `--force-with-lease` only (never `--force`)
+- Verify clone identity: `git remote -v` must show a URL matching the PR's repo before operating
+- For fork PRs: push to the fork remote, not upstream. The `head_repo` field in the JSON identifies which remote to push to.
 
 ---
 
@@ -104,6 +137,8 @@ pr-owl audit 2>&1
 
 Adapt: `--stale-days 14`, `--repo owner/repo`, `--status CONFLICTS`
 
+After showing the table, briefly summarize what needs attention and offer to fix.
+
 ---
 
 ## Details Mode
@@ -114,12 +149,9 @@ pr-owl audit --details 2>&1
 
 ---
 
-## JSON (skill-internal only)
-
-Only use JSON when you need to extract specific data (check URLs, head_repo for fix mode). Never dump it to the terminal. Always write to `/tmp/pr-owl-audit.json` and use the compact summary command above.
-
 ## Notes
 
 - The CLI is diagnostic only. All remediation runs as direct git/gh commands from this skill.
 - `--workers` controls concurrent health checks (default 5, 1=serial for debugging).
 - JSON goes to stdout, table/details go to stderr.
+- `headRepository.nameWithOwner` is always empty from `gh pr view`. The JSON uses `headRepositoryOwner.login` + `headRepository.name` to construct `head_repo`.
