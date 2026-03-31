@@ -10,7 +10,6 @@ from rich.console import Console
 from rich.table import Table
 
 from pr_owl.models import (
-    FixResult,
     HealthReport,
     MergeStatus,
     RemediationPlan,
@@ -118,27 +117,3 @@ def print_plans(plans: list[RemediationPlan]) -> None:
 
         if plan.summary:
             console.print(f"  [bold]Summary:[/bold] {plan.summary}")
-
-
-def print_fix_results(results: list[FixResult]) -> None:
-    """Print fix operation results."""
-    fixed = [r for r in results if r.success]
-    skipped = [r for r in results if r.skipped]
-    failed = [r for r in results if not r.success and not r.skipped]
-
-    if fixed:
-        console.print(f"\n[green]Fixed ({len(fixed)}):[/green]")
-        for r in fixed:
-            console.print(f"  ✓ {r.pr.repo}#{r.pr.number}")
-            if r.command_run:
-                console.print(f"    [dim]$ {r.command_run}[/dim]")
-
-    if skipped:
-        console.print(f"\n[yellow]Skipped ({len(skipped)}):[/yellow]")
-        for r in skipped:
-            console.print(f"  – {r.pr.repo}#{r.pr.number}: {r.reason}")
-
-    if failed:
-        console.print(f"\n[red]Failed ({len(failed)}):[/red]")
-        for r in failed:
-            console.print(f"  ✗ {r.pr.repo}#{r.pr.number}: {r.reason}")

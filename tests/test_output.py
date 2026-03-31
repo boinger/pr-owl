@@ -11,7 +11,6 @@ from pr_owl.models import (
     Blocker,
     BlockerType,
     CICheck,
-    FixResult,
     HealthReport,
     MergeStatus,
     RemediationPlan,
@@ -19,7 +18,6 @@ from pr_owl.models import (
 )
 from pr_owl.output import (
     _report_to_dict,
-    print_fix_results,
     print_plans,
     print_table,
 )
@@ -151,22 +149,3 @@ class TestPrintPlans:
         assert "Behind base" in output
         assert "CI failing" in output
         assert "ci/lint" in output
-
-
-class TestPrintFixResults:
-    def test_fixed(self, sample_pr):
-        results = [FixResult(pr=sample_pr, success=True, command_run="gh pr update-branch 42")]
-        output = _capture_console(print_fix_results, results)
-        assert "Fixed" in output
-
-    def test_skipped(self, sample_pr):
-        results = [FixResult(pr=sample_pr, skipped=True, reason="not behind")]
-        output = _capture_console(print_fix_results, results)
-        assert "Skipped" in output
-        assert "not behind" in output
-
-    def test_failed(self, sample_pr):
-        results = [FixResult(pr=sample_pr, success=False, reason="conflicts")]
-        output = _capture_console(print_fix_results, results)
-        assert "Failed" in output
-        assert "conflicts" in output

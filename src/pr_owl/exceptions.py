@@ -30,7 +30,3 @@ class GhRateLimitError(PrOwlError):
 
 class PrNotFoundError(PrOwlError):
     """PR or repository no longer exists."""
-
-
-class FixError(PrOwlError):
-    """Auto-fix operation failed."""

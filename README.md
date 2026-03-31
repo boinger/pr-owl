@@ -40,11 +40,8 @@ pr-owl audit --stale-days 7
 # Scope to a specific repo
 pr-owl audit --repo owner/repo
 
-# Auto-fix BEHIND PRs (rebase)
-pr-owl audit --fix
-
-# Dry run — see what --fix would do
-pr-owl audit --fix --dry-run
+# Scope to a specific status
+pr-owl audit --status CONFLICTS
 ```
 
 ## Requirements

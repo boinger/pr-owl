@@ -18,7 +18,6 @@ from pr_owl.gh import (
     ensure_gh,
     get_current_user,
     search_prs,
-    update_branch,
     view_pr,
 )
 
@@ -128,39 +127,6 @@ class TestViewPr:
         )
         with pytest.raises(PrNotFoundError):
             view_pr(42, "deleted/repo")
-
-
-class TestUpdateBranch:
-    def test_success(self, mock_subprocess, sample_pr):
-        mock_subprocess.return_value = MagicMock(returncode=0, stdout="Branch updated", stderr="")
-        result = update_branch(sample_pr)
-        assert result.success
-        assert not result.skipped
-        assert result.pr is sample_pr
-
-    def test_already_up_to_date(self, mock_subprocess, sample_pr):
-        mock_subprocess.return_value = MagicMock(returncode=0, stdout="already up-to-date", stderr="")
-        result = update_branch(sample_pr)
-        assert result.skipped
-        assert "up-to-date" in result.reason
-
-    def test_conflicts(self, mock_subprocess, sample_pr):
-        mock_subprocess.return_value = MagicMock(returncode=1, stdout="", stderr="Merge conflict detected")
-        result = update_branch(sample_pr)
-        assert not result.success
-        assert "conflicts" in result.reason
-
-    def test_permission_denied(self, mock_subprocess, sample_pr):
-        mock_subprocess.return_value = MagicMock(returncode=1, stdout="", stderr="Permission denied")
-        result = update_branch(sample_pr)
-        assert not result.success
-        assert "permission" in result.reason.lower() or "rebase locally" in result.reason
-
-    def test_preserves_pr_info(self, mock_subprocess, sample_pr):
-        mock_subprocess.return_value = MagicMock(returncode=0, stdout="Branch updated", stderr="")
-        result = update_branch(sample_pr)
-        assert result.pr.title == "Add widget support"
-        assert result.pr.number == 42
 
 
 class TestGetCurrentUser:

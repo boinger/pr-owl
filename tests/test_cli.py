@@ -9,9 +9,6 @@ from click.testing import CliRunner
 from pr_owl.cli import cli
 from pr_owl.exceptions import GhCommandError
 from pr_owl.models import (
-    Blocker,
-    BlockerType,
-    FixResult,
     HealthReport,
     MergeStatus,
     PRInfo,
@@ -77,47 +74,6 @@ class TestAuditCommand:
         ]
         with patches[0], patches[1], patches[2], patches[3], patches[4]:
             result = runner.invoke(cli, ["audit", "--stale-days", "7"])
-        assert result.exit_code == 0
-
-    def test_fix_confirmation(self):
-        pr = _sample_pr()
-        report = HealthReport(
-            pr=pr,
-            status=MergeStatus.BEHIND,
-            blockers=[Blocker(type=BlockerType.BEHIND_BASE, description="Behind")],
-        )
-
-        patches = _mock_preflight() + [
-            patch("pr_owl.cli.discover_prs", return_value=[pr]),
-            patch("pr_owl.cli.check_pr", return_value=report),
-            patch(
-                "pr_owl.cli.fix_pr",
-                return_value=FixResult(pr=pr, success=True, command_run="gh pr update-branch"),
-            ),
-        ]
-        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5]:
-            # Say "y" to confirmation
-            result = runner.invoke(cli, ["audit", "--fix"], input="y\n")
-        assert result.exit_code == 0
-
-    def test_fix_yes_skips_confirmation(self):
-        pr = _sample_pr()
-        report = HealthReport(
-            pr=pr,
-            status=MergeStatus.BEHIND,
-            blockers=[Blocker(type=BlockerType.BEHIND_BASE, description="Behind")],
-        )
-
-        patches = _mock_preflight() + [
-            patch("pr_owl.cli.discover_prs", return_value=[pr]),
-            patch("pr_owl.cli.check_pr", return_value=report),
-            patch(
-                "pr_owl.cli.fix_pr",
-                return_value=FixResult(pr=pr, success=True, command_run="gh pr update-branch"),
-            ),
-        ]
-        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5]:
-            result = runner.invoke(cli, ["audit", "--fix", "--yes"])
         assert result.exit_code == 0
 
     def test_json_output(self):

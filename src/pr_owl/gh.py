@@ -14,7 +14,6 @@ from pr_owl.exceptions import (
     GhRateLimitError,
     PrNotFoundError,
 )
-from pr_owl.models import FixResult, PRInfo
 
 logger = logging.getLogger(__name__)
 
@@ -87,7 +86,8 @@ def search_prs(
 
 # gh pr view fields
 _VIEW_FIELDS = (
-    "number,title,url,isDraft,mergeStateStatus,mergeable,reviewDecision,headRefName,baseRefName,statusCheckRollup"
+    "number,title,url,isDraft,mergeStateStatus,mergeable,reviewDecision,"
+    "headRefName,baseRefName,headRepository,headRepositoryOwner,statusCheckRollup"
 )
 
 
@@ -99,35 +99,6 @@ def view_pr(number: int, repo: str) -> dict:
     _check_errors(cmd, result)
 
     return json.loads(result.stdout)
-
-
-def update_branch(pr: PRInfo, rebase: bool = True) -> FixResult:
-    """Update a PR branch via gh pr update-branch. Returns FixResult."""
-    cmd = ["gh", "pr", "update-branch", str(pr.number), "-R", pr.repo]
-    if rebase:
-        cmd.append("--rebase")
-
-    result = _run(cmd)
-    cmd_str = " ".join(cmd)
-    combined = f"{result.stdout}\n{result.stderr}".lower()
-
-    if result.returncode == 0:
-        if "already up-to-date" in combined or "already up to date" in combined:
-            return FixResult(pr=pr, skipped=True, reason="already up-to-date", command_run=cmd_str)
-        return FixResult(pr=pr, success=True, command_run=cmd_str)
-
-    stderr = result.stderr.strip()
-    if "conflict" in stderr.lower():
-        return FixResult(pr=pr, success=False, reason="conflicts discovered during rebase", command_run=cmd_str)
-    if "permission" in stderr.lower() or "denied" in stderr.lower():
-        return FixResult(
-            pr=pr,
-            success=False,
-            reason="repo doesn't allow branch updates; rebase locally",
-            command_run=cmd_str,
-        )
-
-    return FixResult(pr=pr, success=False, reason=stderr, command_run=cmd_str)
 
 
 def get_current_user() -> str:

@@ -136,6 +136,10 @@ def check_pr(pr: PRInfo) -> HealthReport:
     blockers = build_blockers(data)
     checks = _parse_checks(data.get("statusCheckRollup", []))
 
+    head_repo_owner = data.get("headRepositoryOwner", {}).get("login", "")
+    head_repo_name = data.get("headRepository", {}).get("name", "")
+    head_repo = f"{head_repo_owner}/{head_repo_name}" if head_repo_owner and head_repo_name else ""
+
     report = HealthReport(
         pr=pr,
         status=status,
@@ -146,6 +150,7 @@ def check_pr(pr: PRInfo) -> HealthReport:
         checks=checks,
         head_ref=data.get("headRefName", ""),
         base_ref=data.get("baseRefName", ""),
+        head_repo=head_repo,
     )
 
     if mergeable == "UNKNOWN":

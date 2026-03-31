@@ -4,7 +4,6 @@ from pr_owl.models import (
     Blocker,
     BlockerType,
     CICheck,
-    FixResult,
     HealthReport,
     MergeStatus,
     PRInfo,
@@ -121,20 +120,3 @@ class TestHealthReport:
         assert len(r.checks_passing) == 1
         assert len(r.checks_failing) == 1
         assert len(r.checks_pending) == 1
-
-
-class TestFixResult:
-    def test_success(self, sample_pr):
-        r = FixResult(pr=sample_pr, success=True, command_run="gh pr update-branch 42")
-        assert r.success
-        assert not r.skipped
-
-    def test_skipped(self, sample_pr):
-        r = FixResult(pr=sample_pr, skipped=True, reason="not behind")
-        assert r.skipped
-        assert not r.success
-
-    def test_failed(self, sample_pr):
-        r = FixResult(pr=sample_pr, success=False, reason="conflicts")
-        assert not r.success
-        assert not r.skipped

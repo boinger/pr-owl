@@ -12,11 +12,9 @@ from pr_owl import __version__, gh
 from pr_owl.checker import check_pr
 from pr_owl.discovery import discover_prs, filter_stale
 from pr_owl.exceptions import GhAuthError, GhNotFoundError, PrOwlError
-from pr_owl.fixer import fix_pr
-from pr_owl.models import FixResult, HealthReport, MergeStatus
+from pr_owl.models import HealthReport, MergeStatus
 from pr_owl.output import (
     console,
-    print_fix_results,
     print_json,
     print_plans,
     print_summary,
@@ -46,9 +44,6 @@ def cli(ctx: click.Context, verbose: bool) -> None:
 @click.option("--status", "status_filter", default="", help="Filter by MergeStatus value.")
 @click.option("--json", "json_output", is_flag=True, help="JSON output to stdout.")
 @click.option("--details", "show_plan", is_flag=True, help="Show detailed blockers and remediation steps.")
-@click.option("--fix", is_flag=True, help="Auto-fix BEHIND PRs (rebase).")
-@click.option("--yes", "-y", is_flag=True, help="Skip confirmation for --fix.")
-@click.option("--dry-run", is_flag=True, help="Show what --fix would do.")
 @click.option("--workers", type=int, default=5, help="Concurrent health check workers (1=serial).")
 def audit(
     repo: str,
@@ -57,9 +52,6 @@ def audit(
     status_filter: str,
     json_output: bool,
     show_plan: bool,
-    fix: bool,
-    yes: bool,
-    dry_run: bool,
     workers: int,
 ) -> None:
     """Audit your open PRs for mergeability."""
@@ -137,27 +129,3 @@ def audit(
         print_plans(plans)
     else:
         print_table(reports)
-
-    # Fix
-    if fix:
-        fixable = [p for p in plans if any(b.type.value == "BEHIND_BASE" for b in p.report.blockers)]
-        if not fixable:
-            conflicts = sum(1 for r in reports if r.status == MergeStatus.CONFLICTS)
-            msg = "--fix can only auto-rebase PRs that are behind their base branch (no conflicts)."
-            if conflicts:
-                msg += f" {conflicts} PR(s) have merge conflicts that require manual resolution."
-            console.print(f"\n[dim]{msg}[/dim]")
-            return
-
-        if not yes and not dry_run:
-            console.print(f"\n[bold]Will update branch for {len(fixable)} BEHIND PR(s).[/bold]")
-            if not click.confirm("Proceed?"):
-                console.print("[dim]Aborted.[/dim]")
-                return
-
-        results: list[FixResult] = []
-        for plan in fixable:
-            result = fix_pr(plan, dry_run=dry_run)
-            results.append(result)
-
-        print_fix_results(results)

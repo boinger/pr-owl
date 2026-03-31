@@ -40,9 +40,6 @@ pr-owl audit [OPTIONS]
 --status TEXT        Filter by MergeStatus value
 --json               JSON output to stdout
 --details            Show detailed blockers and remediation steps
---fix                Auto-fix BEHIND PRs (rebase)
---yes/-y             Skip confirmation for --fix
---dry-run            Show what --fix would do
 --workers INT        Concurrent health check workers (default 5, 1=serial)
 --verbose/-v         Debug logging
 ```

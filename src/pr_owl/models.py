@@ -93,6 +93,7 @@ class HealthReport:
     checks: list[CICheck] = field(default_factory=list)
     head_ref: str = ""
     base_ref: str = ""
+    head_repo: str = ""
     error: str = ""
 
     @property
@@ -124,12 +125,3 @@ class RemediationPlan:
     report: HealthReport
     steps: list[RemediationStep] = field(default_factory=list)
     summary: str = ""
-
-
-@dataclass
-class FixResult:
-    pr: PRInfo
-    success: bool = False
-    skipped: bool = False
-    reason: str = ""
-    command_run: str = ""
