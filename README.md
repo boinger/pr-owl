@@ -14,8 +14,8 @@ pr-owl — @you — 6 open PR(s)
 ┏━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━┳━━━━━━━━━━━━━━┓
 ┃ Status       ┃ PR                    ┃ Title                          ┃ Blockers ┃ Updated      ┃
 ┡━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━╇━━━━━━━━━━━━━━┩
-│ CONFLICTS    │ acme/api#218          │ Add rate limiting middleware    │     2    │ 2026-03-15   │
-│ CI_FAILING   │ widgets/core#74       │ Fix timezone handling in cron   │     1    │ 2026-03-28   │
+│ CONFLICTS    │ acme/api#218          │ Add rate limiting middleware   │     2    │ 2026-03-15   │
+│ CI_FAILING   │ widgets/core#74       │ Fix timezone handling in cron  │     1    │ 2026-03-28   │
 │ BEHIND       │ acme/api#220          │ Update OpenAPI spec for v3     │     1    │ 2026-03-29   │
 │ BLOCKED      │ bigcorp/service#1042  │ Add gRPC health check endpoint │     1    │ 2026-03-20   │
 │ DRAFT        │ widgets/core#80       │ Refactor event pipeline        │     1    │ 2026-03-30   │
@@ -96,15 +96,15 @@ pr-owl audit --verbose
 pr-owl maps GitHub's `mergeStateStatus` to a simplified set of statuses:
 
 | GitHub mergeStateStatus | pr-owl Status |
-|------------------------|---------------|
-| CLEAN                  | READY         |
-| BEHIND                 | BEHIND        |
-| DIRTY                  | CONFLICTS     |
-| BLOCKED                | BLOCKED       |
-| UNSTABLE               | CI_FAILING    |
-| HAS_HOOKS              | READY         |
-| isDraft=true           | DRAFT         |
-| anything else          | UNKNOWN       |
+|-------------------------|---------------|
+| CLEAN                   | READY         |
+| BEHIND                  | BEHIND        |
+| DIRTY                   | CONFLICTS     |
+| BLOCKED                 | BLOCKED       |
+| UNSTABLE                | CI_FAILING    |
+| HAS_HOOKS               | READY         |
+| isDraft=true            | DRAFT         |
+| anything else           | UNKNOWN       |
 
 Each PR can have multiple blockers (e.g., BEHIND + CI_FAILING). The primary status is used for display; the full blocker list drives remediation.
 
