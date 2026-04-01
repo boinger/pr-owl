@@ -4,7 +4,9 @@ description: |
   Audit outbound GitHub PRs for mergeability and guide remediation.
   Use when: "check my PRs", "PR status", "stale PRs", "merge readiness",
   "pr-owl", "outbound PRs", "PR health", "what PRs need attention",
-  "fix my PRs".
+  "fix my PRs", "rebase needed", "upstream updated", "get rebased",
+  "merge upstream", "fix conflicts", "bring branch current",
+  "sync with upstream", "get up to date".
 ---
 
 # pr-owl: PR Health Audit & Remediation
@@ -22,7 +24,7 @@ uv tool install --from git+https://github.com/boinger/pr-owl.git pr-owl
 
 ## Mode Detection
 
-- **"fix"**, **"fix my PRs"**, **"rebase"** → **Fix mode**
+- **"fix"**, **"fix my PRs"**, **"rebase"**, **"upstream"**, **"conflicts"**, **"sync"**, **"up to date"** → **Fix mode**
 - **"audit"**, **"check"**, **"status"** → **Audit mode**
 - **"details"** → **Details mode**
 - Ambiguous → **Audit mode**
