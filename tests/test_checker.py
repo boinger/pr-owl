@@ -67,6 +67,28 @@ class TestParseChecks:
         assert _parse_checks([]) == []
         assert _parse_checks(None) == []
 
+    def test_unknown_typename(self):
+        rollup = [
+            {
+                "__typename": "SomethingNew",
+                "name": "external-check",
+                "status": "COMPLETED",
+                "conclusion": "SUCCESS",
+                "workflowName": "",
+                "detailsUrl": "https://example.com",
+            }
+        ]
+        checks = _parse_checks(rollup)
+        assert len(checks) == 1
+        assert checks[0].name == "external-check"
+        assert checks[0].conclusion == "SUCCESS"
+
+    def test_unknown_typename_no_name(self):
+        rollup = [{"__typename": "Unknown", "status": "COMPLETED", "conclusion": "FAILURE"}]
+        checks = _parse_checks(rollup)
+        assert len(checks) == 1
+        assert checks[0].name == "unknown"
+
 
 class TestBuildBlockers:
     def test_behind(self):

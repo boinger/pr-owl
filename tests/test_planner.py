@@ -53,6 +53,16 @@ class TestPlanRemediation:
         plan = plan_remediation(report)
         assert any("review" in s.description.lower() for s in plan.steps)
 
+    def test_changes_requested(self, sample_pr):
+        report = HealthReport(
+            pr=sample_pr,
+            status=MergeStatus.BLOCKED,
+            blockers=[Blocker(type=BlockerType.MISSING_REVIEWS, description="Changes requested")],
+            review_decision="CHANGES_REQUESTED",
+        )
+        plan = plan_remediation(report)
+        assert any("Address requested changes and request re-review" in s.description for s in plan.steps)
+
     def test_ci_failing(self, sample_pr):
         failing_check = CICheck(
             name="ci/lint",

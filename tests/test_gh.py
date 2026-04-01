@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import subprocess
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -75,6 +76,12 @@ class TestCheckErrors:
         assert exc_info.value.returncode == 1
         assert "something broke" in exc_info.value.stderr
 
+    def test_timeout_expired(self, mock_subprocess):
+        mock_subprocess.side_effect = subprocess.TimeoutExpired(cmd=["gh", "search", "prs"], timeout=30)
+        with pytest.raises(GhCommandError) as exc_info:
+            search_prs()
+        assert "timed out" in str(exc_info.value).lower()
+
 
 class TestSearchPrs:
     def test_basic(self, mock_subprocess):
@@ -107,6 +114,20 @@ class TestSearchPrs:
         mock_subprocess.return_value = MagicMock(returncode=1, stdout="", stderr="API rate limit exceeded")
         with pytest.raises(GhRateLimitError):
             search_prs()
+
+    def test_org_filter(self, mock_subprocess):
+        mock_subprocess.return_value = MagicMock(returncode=0, stdout="[]", stderr="")
+        search_prs(org="acme")
+        args = mock_subprocess.call_args[0][0]
+        owner_idx = args.index("--owner")
+        assert args[owner_idx + 1] == "acme"
+
+    def test_repo_filter(self, mock_subprocess):
+        mock_subprocess.return_value = MagicMock(returncode=0, stdout="[]", stderr="")
+        search_prs(repo="acme/repo")
+        args = mock_subprocess.call_args[0][0]
+        repo_idx = args.index("--repo")
+        assert args[repo_idx + 1] == "acme/repo"
 
 
 class TestViewPr:
