@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -101,7 +102,7 @@ def audit(
             try:
                 report = future.result()
                 reports.append(report)
-            except Exception as exc:
+            except (PrOwlError, KeyError, json.JSONDecodeError, AttributeError, TypeError) as exc:
                 logging.getLogger(__name__).warning("Failed to check %s#%d: %s", pr.repo, pr.number, exc)
                 reports.append(HealthReport(pr=pr, status=MergeStatus.UNKNOWN, error=str(exc)))
 
