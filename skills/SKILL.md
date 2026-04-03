@@ -102,6 +102,34 @@ For each candidate directory that exists, verify with `git remote -v` that ANY r
 
 Never `find /` or guess blindly. If no clone is found and the user doesn't know, skip that PR and report it.
 
+### give-back Workspace Context
+
+After finding a clone, check for give-back contribution context:
+
+```bash
+[ -f <clone_path>/.give-back/context.json ] && echo "GIVE_BACK_WORKSPACE" || echo "NO_CONTEXT"
+```
+
+If GIVE_BACK_WORKSPACE, read `<clone_path>/.give-back/context.json`. The
+relevant fields are:
+- `upstream_owner` — base repo owner (e.g., "pallets")
+- `repo` — repo name (e.g., "flask")
+- `issue_number` — upstream issue this PR addresses
+- `branch_name` — the contribution branch
+- `dco_required` — whether commits need Signed-off-by
+- `test_command` — how to run tests after rebase
+
+Also read `<clone_path>/.give-back/brief.md` for commit format conventions.
+
+Use this context to:
+- **Enrich reporting**: "PR #57 (for pallets/flask#1234)" instead of just "PR #57"
+- **Respect DCO**: if `dco_required` is true, ensure rebase preserves Signed-off-by
+- **Run post-rebase tests**: use `test_command` from context if available
+- **Follow conventions**: use commit format from the brief during conflict resolution
+
+If context.json is missing, malformed, or lacks expected fields, proceed
+normally. This is optional enrichment, never a gate.
+
 ### Remote Identification
 
 A fork clone typically has two remotes:
