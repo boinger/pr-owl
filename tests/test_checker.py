@@ -107,6 +107,13 @@ class TestBuildBlockers:
         blockers = build_blockers(data)
         assert any(b.type == BlockerType.MISSING_REVIEWS for b in blockers)
 
+    def test_changes_requested(self):
+        data = load_fixture("pr_view_blocked.json")
+        data["reviewDecision"] = "CHANGES_REQUESTED"
+        blockers = build_blockers(data)
+        assert any(b.type == BlockerType.CHANGES_REQUESTED for b in blockers)
+        assert not any(b.type == BlockerType.MISSING_REVIEWS for b in blockers)
+
     def test_failing_checks(self):
         data = load_fixture("pr_view_unstable.json")
         blockers = build_blockers(data)

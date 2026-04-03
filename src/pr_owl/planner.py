@@ -55,13 +55,10 @@ def plan_remediation(report: HealthReport) -> RemediationPlan:
                         automatable=False,
                     )
                 )
+            case BlockerType.CHANGES_REQUESTED:
+                steps.append(RemediationStep(description="Address requested changes and request re-review"))
             case BlockerType.MISSING_REVIEWS:
-                desc = f"Review status: {report.review_decision}"
-                if report.review_decision == "CHANGES_REQUESTED":
-                    desc = "Address requested changes and request re-review"
-                elif report.review_decision == "REVIEW_REQUIRED":
-                    desc = "Request review from required reviewers"
-                steps.append(RemediationStep(description=desc))
+                steps.append(RemediationStep(description="Request review from required reviewers"))
             case BlockerType.FAILING_CHECKS:
                 failing_names = blocker.details or ["(unknown checks)"]
                 steps.append(

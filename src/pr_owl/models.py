@@ -21,6 +21,7 @@ class BlockerType(str, Enum):
     BEHIND_BASE = "BEHIND_BASE"
     HAS_CONFLICTS = "HAS_CONFLICTS"
     MISSING_REVIEWS = "MISSING_REVIEWS"
+    CHANGES_REQUESTED = "CHANGES_REQUESTED"
     FAILING_CHECKS = "FAILING_CHECKS"
     IS_DRAFT = "IS_DRAFT"
     BRANCH_PROTECTION = "BRANCH_PROTECTION"
@@ -32,6 +33,17 @@ class Blocker:
     type: BlockerType
     description: str
     details: list[str] = field(default_factory=list)
+
+    @property
+    def actionable(self) -> bool:
+        """Whether the PR author can potentially act on this blocker."""
+        return self.type in (
+            BlockerType.BEHIND_BASE,
+            BlockerType.HAS_CONFLICTS,
+            BlockerType.FAILING_CHECKS,
+            BlockerType.IS_DRAFT,
+            BlockerType.CHANGES_REQUESTED,
+        )
 
 
 @dataclass
@@ -99,6 +111,11 @@ class HealthReport:
     @property
     def is_ready(self) -> bool:
         return self.status == MergeStatus.READY and not self.blockers
+
+    @property
+    def has_actionable_blockers(self) -> bool:
+        """Whether any blocker is potentially fixable by the PR author."""
+        return any(b.actionable for b in self.blockers)
 
     @property
     def checks_passing(self) -> list[CICheck]:

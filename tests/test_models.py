@@ -1,5 +1,7 @@
 """Tests for pr_owl.models."""
 
+import pytest
+
 from pr_owl.models import (
     Blocker,
     BlockerType,
@@ -23,11 +25,12 @@ class TestMergeStatus:
 
 class TestBlockerType:
     def test_all_values(self):
-        assert len(BlockerType) == 7
+        assert len(BlockerType) == 8
         expected = {
             "BEHIND_BASE",
             "HAS_CONFLICTS",
             "MISSING_REVIEWS",
+            "CHANGES_REQUESTED",
             "FAILING_CHECKS",
             "IS_DRAFT",
             "BRANCH_PROTECTION",
@@ -45,6 +48,31 @@ class TestBlocker:
         b = Blocker(type=BlockerType.FAILING_CHECKS, description="2 checks failing", details=["ci/build", "ci/lint"])
         assert len(b.details) == 2
         assert "ci/build" in b.details
+
+    @pytest.mark.parametrize(
+        "btype,expected",
+        [
+            (BlockerType.BEHIND_BASE, True),
+            (BlockerType.HAS_CONFLICTS, True),
+            (BlockerType.FAILING_CHECKS, True),
+            (BlockerType.IS_DRAFT, True),
+            (BlockerType.CHANGES_REQUESTED, True),
+            (BlockerType.MISSING_REVIEWS, False),
+            (BlockerType.BRANCH_PROTECTION, False),
+            (BlockerType.UNKNOWN_BLOCKER, False),
+        ],
+    )
+    def test_actionable(self, btype, expected):
+        b = Blocker(type=btype, description="test")
+        assert b.actionable is expected
+
+    def test_all_blocker_types_have_defined_actionability(self):
+        """Completeness guard: every BlockerType must be explicitly classified."""
+        actionable = {bt for bt in BlockerType if Blocker(type=bt, description="").actionable}
+        non_actionable = {bt for bt in BlockerType if not Blocker(type=bt, description="").actionable}
+        assert actionable | non_actionable == set(BlockerType)
+        assert len(actionable) == 5
+        assert len(non_actionable) == 3
 
 
 class TestCICheck:
@@ -109,6 +137,37 @@ class TestHealthReport:
     def test_not_ready_when_not_ready_status(self, sample_pr):
         r = HealthReport(pr=sample_pr, status=MergeStatus.BEHIND)
         assert not r.is_ready
+
+    def test_has_actionable_blockers_no_blockers(self, sample_pr):
+        r = HealthReport(pr=sample_pr, status=MergeStatus.READY)
+        assert not r.has_actionable_blockers
+
+    def test_has_actionable_blockers_only_non_actionable(self, sample_pr):
+        r = HealthReport(
+            pr=sample_pr,
+            status=MergeStatus.BLOCKED,
+            blockers=[Blocker(type=BlockerType.MISSING_REVIEWS, description="Review required")],
+        )
+        assert not r.has_actionable_blockers
+
+    def test_has_actionable_blockers_actionable(self, sample_pr):
+        r = HealthReport(
+            pr=sample_pr,
+            status=MergeStatus.CI_FAILING,
+            blockers=[Blocker(type=BlockerType.FAILING_CHECKS, description="1 check(s) failing")],
+        )
+        assert r.has_actionable_blockers
+
+    def test_has_actionable_blockers_mixed(self, sample_pr):
+        r = HealthReport(
+            pr=sample_pr,
+            status=MergeStatus.BLOCKED,
+            blockers=[
+                Blocker(type=BlockerType.MISSING_REVIEWS, description="Review required"),
+                Blocker(type=BlockerType.FAILING_CHECKS, description="1 check(s) failing"),
+            ],
+        )
+        assert r.has_actionable_blockers
 
     def test_checks_computed(self, sample_pr):
         checks = [

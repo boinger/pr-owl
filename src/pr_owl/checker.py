@@ -46,9 +46,10 @@ def build_blockers(data: dict) -> list[Blocker]:
         blockers.append(Blocker(type=BlockerType.HAS_CONFLICTS, description="Branch has merge conflicts"))
 
     review = data.get("reviewDecision", "")
-    if review in ("CHANGES_REQUESTED", "REVIEW_REQUIRED"):
-        desc = "Changes requested" if review == "CHANGES_REQUESTED" else "Review required"
-        blockers.append(Blocker(type=BlockerType.MISSING_REVIEWS, description=desc))
+    if review == "CHANGES_REQUESTED":
+        blockers.append(Blocker(type=BlockerType.CHANGES_REQUESTED, description="Changes requested"))
+    elif review == "REVIEW_REQUIRED":
+        blockers.append(Blocker(type=BlockerType.MISSING_REVIEWS, description="Review required"))
 
     checks = _parse_checks(data.get("statusCheckRollup", []))
     failing = [c for c in checks if c.is_failing]

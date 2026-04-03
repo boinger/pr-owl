@@ -56,11 +56,18 @@ def print_table(reports: list[HealthReport]) -> None:
         MergeStatus.DRAFT: 5,
         MergeStatus.READY: 6,
     }
-    sorted_reports = sorted(reports, key=lambda r: status_order.get(r.status, 99))
+    sorted_reports = sorted(
+        reports,
+        key=lambda r: (status_order.get(r.status, 99), 0 if r.has_actionable_blockers else 1),
+    )
 
     for report in sorted_reports:
         style = _STATUS_STYLE.get(report.status, "")
-        blocker_count = str(len(report.blockers)) if report.blockers else ""
+        if report.blockers:
+            indicator = "⚡" if report.has_actionable_blockers else "👤"
+            blocker_count = f"{indicator} {len(report.blockers)}"
+        else:
+            blocker_count = ""
         pr_ref = f"{report.pr.repo}#{report.pr.number}"
         updated = report.pr.updated_at[:10] if report.pr.updated_at else ""
 
@@ -73,6 +80,7 @@ def print_table(reports: list[HealthReport]) -> None:
         )
 
     console.print(table)
+    console.print("[dim]⚡ = potentially fixable  👤 = waiting on others[/dim]")
 
 
 def _report_to_dict(report: HealthReport) -> dict:
@@ -80,8 +88,10 @@ def _report_to_dict(report: HealthReport) -> dict:
     d = asdict(report)
     d["status"] = report.status.value
     d["blockers"] = [
-        {"type": b.type.value, "description": b.description, "details": b.details} for b in report.blockers
+        {"type": b.type.value, "description": b.description, "details": b.details, "actionable": b.actionable}
+        for b in report.blockers
     ]
+    d["has_actionable_blockers"] = report.has_actionable_blockers
     d["checks"] = [asdict(c) for c in report.checks]
     return d
 

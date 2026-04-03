@@ -57,7 +57,7 @@ class TestPlanRemediation:
         report = HealthReport(
             pr=sample_pr,
             status=MergeStatus.BLOCKED,
-            blockers=[Blocker(type=BlockerType.MISSING_REVIEWS, description="Changes requested")],
+            blockers=[Blocker(type=BlockerType.CHANGES_REQUESTED, description="Changes requested")],
             review_decision="CHANGES_REQUESTED",
         )
         plan = plan_remediation(report)
