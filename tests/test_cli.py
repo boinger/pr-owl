@@ -233,3 +233,87 @@ class TestAuditCommand:
         result = runner.invoke(cli, ["--version"])
         assert result.exit_code == 0
         assert "pr-owl" in result.output or "version" in result.output.lower()
+
+    def test_unknown_retry_resolves(self):
+        """UNKNOWN mergeable PRs are retried and resolved."""
+        pr1 = _sample_pr(1)
+        pr2 = _sample_pr(2)
+
+        unknown_report = HealthReport(pr=pr1, status=MergeStatus.UNKNOWN, mergeable="UNKNOWN")
+        blocked_report = HealthReport(
+            pr=pr1,
+            status=MergeStatus.BLOCKED,
+            mergeable="MERGEABLE",
+            blockers=[Blocker(type=BlockerType.MISSING_REVIEWS, description="Review required")],
+        )
+        ready_report = HealthReport(pr=pr2, status=MergeStatus.READY)
+
+        call_count = 0
+
+        def mock_check(pr):
+            nonlocal call_count
+            call_count += 1
+            if pr.number == 1:
+                # First call returns UNKNOWN, second call returns BLOCKED
+                if call_count <= 2:
+                    return unknown_report
+                return blocked_report
+            return ready_report
+
+        patches = _mock_preflight() + [
+            patch("pr_owl.cli.discover_prs", return_value=[pr1, pr2]),
+            patch("pr_owl.cli.check_pr", side_effect=mock_check),
+            patch("pr_owl.cli.time.sleep"),
+            patch("pr_owl.cli.time.monotonic", side_effect=[0.0, 0.5, 0.5, 3.0]),
+        ]
+        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6]:
+            result = runner.invoke(cli, ["audit", "--json"])
+        assert result.exit_code == 0
+        import json
+
+        data = json.loads(result.output)
+        statuses = {d["pr"]["number"]: d["status"] for d in data}
+        assert statuses[1] == "BLOCKED"
+        assert statuses[2] == "READY"
+
+    def test_unknown_retry_still_unknown(self):
+        """PRs that stay UNKNOWN after retry are reported as UNKNOWN."""
+        pr = _sample_pr(1)
+
+        unknown_report = HealthReport(pr=pr, status=MergeStatus.UNKNOWN, mergeable="UNKNOWN")
+
+        patches = _mock_preflight() + [
+            patch("pr_owl.cli.discover_prs", return_value=[pr]),
+            patch("pr_owl.cli.check_pr", return_value=unknown_report),
+            patch("pr_owl.cli.time.sleep"),
+            patch("pr_owl.cli.time.monotonic", side_effect=[0.0, 0.5, 3.0]),
+        ]
+        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6]:
+            result = runner.invoke(cli, ["audit", "--json"])
+        assert result.exit_code == 0
+        import json
+
+        data = json.loads(result.output)
+        assert data[0]["status"] == "UNKNOWN"
+
+    def test_unknown_no_retry_for_errors(self):
+        """Exception-caused UNKNOWNs (mergeable='') are not retried."""
+        pr = _sample_pr(1)
+
+        def mock_check(pr):
+            raise GhCommandError(["gh"], 1, "connection refused")
+
+        mock_check_patch = patch("pr_owl.cli.check_pr", side_effect=mock_check)
+        mock_sleep_patch = patch("pr_owl.cli.time.sleep")
+        patches = _mock_preflight() + [
+            patch("pr_owl.cli.discover_prs", return_value=[pr]),
+            mock_check_patch,
+            mock_sleep_patch,
+        ]
+        with patches[0], patches[1], patches[2], patches[3], patches[4] as mock_check_cm, patches[5] as mock_sleep_cm:
+            result = runner.invoke(cli, ["audit", "--json"])
+        assert result.exit_code == 0
+        # check_pr should be called exactly once (no retry)
+        mock_check_cm.assert_called_once()
+        # sleep should not be called (no retry delay)
+        mock_sleep_cm.assert_not_called()

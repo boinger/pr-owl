@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import sys
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import click
@@ -22,6 +23,10 @@ from pr_owl.output import (
     print_table,
 )
 from pr_owl.planner import plan_remediation
+
+logger = logging.getLogger(__name__)
+
+_UNKNOWN_RETRY_DELAY = 2.0  # seconds to wait before retrying UNKNOWN mergeable states
 
 
 @click.group(invoke_without_command=True)
@@ -94,6 +99,8 @@ def audit(
     # Check health (concurrent)
     reports: list[HealthReport] = []
     effective_workers = max(1, min(workers, len(prs)))
+    has_unknowns = False
+    audit_start = time.monotonic()
 
     with ThreadPoolExecutor(max_workers=effective_workers) as executor:
         future_to_pr = {executor.submit(check_pr, pr): pr for pr in prs}
@@ -102,9 +109,40 @@ def audit(
             try:
                 report = future.result()
                 reports.append(report)
+                if report.mergeable == "UNKNOWN":
+                    has_unknowns = True
             except (PrOwlError, KeyError, json.JSONDecodeError, AttributeError, TypeError) as exc:
-                logging.getLogger(__name__).warning("Failed to check %s#%d: %s", pr.repo, pr.number, exc)
+                logger.warning("Failed to check %s#%d: %s", pr.repo, pr.number, exc)
                 reports.append(HealthReport(pr=pr, status=MergeStatus.UNKNOWN, error=str(exc)))
+
+    # Retry PRs where GitHub returned UNKNOWN mergeable state
+    if has_unknowns:
+        unknown_indices = [i for i, r in enumerate(reports) if r.mergeable == "UNKNOWN"]
+        if unknown_indices:
+            elapsed = time.monotonic() - audit_start
+            delay = max(0.0, _UNKNOWN_RETRY_DELAY - elapsed)
+            logger.info("Retrying %d UNKNOWN PR(s) after %.1fs delay...", len(unknown_indices), delay)
+            if delay > 0:
+                time.sleep(delay)
+
+            resolved = 0
+            with ThreadPoolExecutor(max_workers=effective_workers) as executor:
+                future_to_idx = {executor.submit(check_pr, reports[i].pr): i for i in unknown_indices}
+                for future in as_completed(future_to_idx):
+                    idx = future_to_idx[future]
+                    try:
+                        new_report = future.result()
+                        if new_report.mergeable != "UNKNOWN":
+                            reports[idx] = new_report
+                            resolved += 1
+                    except (PrOwlError, KeyError, json.JSONDecodeError, AttributeError, TypeError):
+                        pass  # keep original UNKNOWN report
+
+            still_unknown = len(unknown_indices) - resolved
+            if resolved:
+                logger.info("Resolved %d PR(s); %d still UNKNOWN.", resolved, still_unknown)
+            elif still_unknown:
+                logger.info("All %d PR(s) still UNKNOWN after retry.", still_unknown)
 
     # Filter by status
     if status_filter:

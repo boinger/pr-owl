@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from unittest.mock import patch
 
 from pr_owl.discovery import discover_prs, filter_stale
@@ -51,14 +52,15 @@ class TestFilterStale:
         assert len(result) == 1
 
     def test_excludes_recent(self):
+        yesterday = datetime.now(tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         pr = PRInfo(
             number=1,
             title="Recent",
             repo="a/b",
             url="",
             is_draft=False,
-            created_at="2026-03-29T00:00:00Z",
-            updated_at="2026-03-29T00:00:00Z",
+            created_at=yesterday,
+            updated_at=yesterday,
         )
         result = filter_stale([pr], days=7)
         assert len(result) == 0
