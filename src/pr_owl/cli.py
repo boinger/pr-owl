@@ -123,6 +123,14 @@ def audit(
             delay = max(0.0, _UNKNOWN_RETRY_DELAY - elapsed)
             logger.info("Retrying %d UNKNOWN PR(s) after %.1fs delay...", len(unknown_indices), delay)
             if delay > 0:
+                # Skip the decorative notice in JSON mode so we never risk
+                # contaminating machine-readable output under stream-mixing
+                # test harnesses or pipes.
+                if not json_output:
+                    console.print(
+                        f"[dim]Retrying {len(unknown_indices)} PR(s) in UNKNOWN mergeable state "
+                        f"after {delay:.1f}s...[/dim]"
+                    )
                 time.sleep(delay)
 
             resolved = 0

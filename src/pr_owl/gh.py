@@ -13,6 +13,7 @@ from pr_owl.exceptions import (
     GhNotFoundError,
     GhRateLimitError,
     PrNotFoundError,
+    PrOwlError,
 )
 
 logger = logging.getLogger(__name__)
@@ -78,7 +79,10 @@ def search_prs(
     result = _run(cmd)
     _check_errors(cmd, result)
 
-    data = json.loads(result.stdout) if result.stdout.strip() else []
+    try:
+        data = json.loads(result.stdout) if result.stdout.strip() else []
+    except json.JSONDecodeError as exc:
+        raise PrOwlError(f"Malformed JSON from 'gh search prs': {exc}") from exc
 
     if len(data) == limit:
         logger.warning("Search returned exactly %d results — results may be truncated.", limit)
@@ -100,7 +104,10 @@ def view_pr(number: int, repo: str) -> dict:
     result = _run(cmd)
     _check_errors(cmd, result)
 
-    return json.loads(result.stdout)
+    try:
+        return json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        raise PrOwlError(f"Malformed JSON from 'gh pr view': {exc}") from exc
 
 
 def get_current_user() -> str:

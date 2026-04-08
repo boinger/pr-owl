@@ -23,10 +23,10 @@ from pr_owl.output import (
 )
 
 
-def _capture_console(func, *args, **kwargs):
+def _capture_console(func, *args, width: int = 120, **kwargs):
     """Capture Rich console output to a string."""
     buf = StringIO()
-    test_console = Console(file=buf, force_terminal=True, width=120)
+    test_console = Console(file=buf, force_terminal=True, width=width)
     # Temporarily replace the module console
     import pr_owl.output as output_mod
 
@@ -101,6 +101,28 @@ class TestPrintTable:
     def test_empty_results(self):
         output = _capture_console(print_table, [])
         assert "No PRs found" in output
+
+    def test_renders_error_snippet(self, sample_pr):
+        """When a report has `error` set, the table shows a dim red snippet in Title.
+
+        Uses a wide console so Rich doesn't truncate the Title cell — real
+        narrow-terminal rendering may ellipsize, but that's layout behavior,
+        not a missing render.
+        """
+        report = HealthReport(
+            pr=sample_pr,
+            status=MergeStatus.UNKNOWN,
+            error="gh returned malformed response: Expecting value",
+        )
+        output = _capture_console(print_table, [report], width=200)
+        assert "malformed response" in output
+
+    def test_no_error_snippet_when_clean(self, sample_pr):
+        """Reports with no error render the title without any error prefix."""
+        report = HealthReport(pr=sample_pr, status=MergeStatus.READY)
+        output = _capture_console(print_table, [report])
+        # No "·" separator from the error snippet format
+        assert "·" not in output
 
 
 class TestPrintJson:
@@ -200,3 +222,28 @@ class TestPrintPlans:
         assert "Behind base" in output
         assert "CI failing" in output
         assert "ci/lint" in output
+
+    def test_shows_error_line(self, sample_pr):
+        """When a report has `error` set, print_plans surfaces the full error text."""
+        plan = RemediationPlan(
+            report=HealthReport(
+                pr=sample_pr,
+                status=MergeStatus.UNKNOWN,
+                error="gh returned malformed JSON: Expecting value at line 1 col 1",
+            ),
+            steps=[],
+            summary="Could not determine status.",
+        )
+        output = _capture_console(print_plans, [plan])
+        assert "Error:" in output
+        assert "malformed JSON" in output
+
+    def test_no_error_line_when_clean(self, sample_pr):
+        """Reports without `error` set omit the error line entirely."""
+        plan = RemediationPlan(
+            report=HealthReport(pr=sample_pr, status=MergeStatus.READY),
+            steps=[],
+            summary="Ready.",
+        )
+        output = _capture_console(print_plans, [plan])
+        assert "Error:" not in output

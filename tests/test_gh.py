@@ -13,6 +13,7 @@ from pr_owl.exceptions import (
     GhNotFoundError,
     GhRateLimitError,
     PrNotFoundError,
+    PrOwlError,
 )
 from pr_owl.gh import (
     check_auth,
@@ -129,6 +130,12 @@ class TestSearchPrs:
         repo_idx = args.index("--repo")
         assert args[repo_idx + 1] == "acme/repo"
 
+    def test_translates_json_decode_error(self, mock_subprocess):
+        """Malformed JSON from `gh search prs` becomes PrOwlError, not JSONDecodeError."""
+        mock_subprocess.return_value = MagicMock(returncode=0, stdout="{ not json", stderr="")
+        with pytest.raises(PrOwlError, match="Malformed JSON"):
+            search_prs()
+
 
 class TestViewPr:
     def test_basic(self, mock_subprocess):
@@ -148,6 +155,12 @@ class TestViewPr:
         )
         with pytest.raises(PrNotFoundError):
             view_pr(42, "deleted/repo")
+
+    def test_translates_json_decode_error(self, mock_subprocess):
+        """Malformed JSON from `gh pr view` becomes PrOwlError, not JSONDecodeError."""
+        mock_subprocess.return_value = MagicMock(returncode=0, stdout="not json", stderr="")
+        with pytest.raises(PrOwlError, match="Malformed JSON"):
+            view_pr(42, "acme/repo")
 
 
 class TestGetCurrentUser:

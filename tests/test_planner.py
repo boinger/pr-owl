@@ -167,3 +167,62 @@ class TestPlanRemediation:
         automatable = [s for s in plan.steps if s.automatable]
         assert len(automatable) >= 1
         assert "update-branch" in automatable[0].command
+
+    def test_emits_remote_placeholder_for_behind(self, sample_pr):
+        """Local git rebase command uses <REMOTE> placeholder and a legend is emitted."""
+        report = HealthReport(
+            pr=sample_pr,
+            status=MergeStatus.BEHIND,
+            blockers=[Blocker(type=BlockerType.BEHIND_BASE, description="Behind")],
+            base_ref="main",
+        )
+        plan = plan_remediation(report)
+        # Fallback uses `git rebase`, not `gh pr update-branch --rebase`
+        git_rebase = [s for s in plan.steps if s.command and "git rebase" in s.command]
+        assert git_rebase, "expected a `git rebase` fallback command"
+        assert all("<REMOTE>" in s.command for s in git_rebase)
+        assert all("upstream" not in s.command for s in git_rebase)
+        # Legend step mentions pr.repo and git remote -v
+        legends = [s for s in plan.steps if "<REMOTE>" in s.description and "git remote" in s.description]
+        assert len(legends) == 1
+        assert sample_pr.repo in legends[0].description
+
+    def test_emits_remote_placeholder_for_conflicts(self, sample_pr):
+        report = HealthReport(
+            pr=sample_pr,
+            status=MergeStatus.CONFLICTS,
+            blockers=[Blocker(type=BlockerType.HAS_CONFLICTS, description="Merge conflicts")],
+            base_ref="main",
+        )
+        plan = plan_remediation(report)
+        assert any("<REMOTE>" in s.command for s in plan.steps if s.command)
+        assert all("upstream" not in (s.command or "") for s in plan.steps)
+        # Exactly one legend step
+        legends = [s for s in plan.steps if "<REMOTE>" in s.description and "git remote" in s.description]
+        assert len(legends) == 1
+
+    def test_single_legend_for_compound_blockers(self, sample_pr):
+        """Even with multiple <REMOTE>-using blockers, emit only one legend."""
+        report = HealthReport(
+            pr=sample_pr,
+            status=MergeStatus.BEHIND,
+            blockers=[
+                Blocker(type=BlockerType.BEHIND_BASE, description="Behind"),
+                Blocker(type=BlockerType.HAS_CONFLICTS, description="Conflicts"),
+            ],
+            base_ref="main",
+        )
+        plan = plan_remediation(report)
+        legends = [s for s in plan.steps if "<REMOTE>" in s.description and "git remote" in s.description]
+        assert len(legends) == 1
+
+    def test_no_legend_when_no_remote_commands(self, sample_pr):
+        """Plans without <REMOTE> commands must not emit the legend."""
+        report = HealthReport(
+            pr=sample_pr,
+            status=MergeStatus.BLOCKED,
+            blockers=[Blocker(type=BlockerType.MISSING_REVIEWS, description="Review required")],
+        )
+        plan = plan_remediation(report)
+        legends = [s for s in plan.steps if "<REMOTE>" in s.description]
+        assert legends == []

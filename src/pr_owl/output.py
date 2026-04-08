@@ -71,10 +71,18 @@ def print_table(reports: list[HealthReport]) -> None:
         pr_ref = f"{report.pr.repo}#{report.pr.number}"
         updated = report.pr.updated_at[:10] if report.pr.updated_at else ""
 
+        title = report.pr.title[:50]
+        if report.error:
+            # Append a truncated error snippet so the user has a hint when a row
+            # would otherwise show UNKNOWN with no explanation. Full error text
+            # is in `--details` / `print_plans`.
+            err_snippet = report.error[:60].replace("\n", " ")
+            title = f"{title} [dim red]· {err_snippet}[/dim red]"
+
         table.add_row(
             f"[{style}]{report.status.value}[/{style}]",
             pr_ref,
-            report.pr.title[:50],
+            title,
             blocker_count,
             updated,
         )
@@ -93,6 +101,10 @@ def _report_to_dict(report: HealthReport) -> dict:
     ]
     d["has_actionable_blockers"] = report.has_actionable_blockers
     d["checks"] = [asdict(c) for c in report.checks]
+    # PRInfo caches a parsed datetime in _updated_at_dt that json.dumps can't
+    # serialize. Strip it — callers needing the timestamp should use updated_at.
+    if isinstance(d.get("pr"), dict):
+        d["pr"].pop("_updated_at_dt", None)
     return d
 
 
@@ -109,6 +121,9 @@ def print_plans(plans: list[RemediationPlan]) -> None:
         console.print(f"\n[bold]{pr.repo}#{pr.number}[/bold]: {pr.title}")
         style = _STATUS_STYLE.get(plan.report.status, "")
         console.print(f"  Status: [{style}]{plan.report.status.value}[/{style}]")
+
+        if plan.report.error:
+            console.print(f"  [red]Error:[/red] {plan.report.error}")
 
         if plan.report.blockers:
             console.print(f"  Blockers ({len(plan.report.blockers)}):")

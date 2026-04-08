@@ -137,8 +137,13 @@ def check_pr(pr: PRInfo) -> HealthReport:
     blockers = build_blockers(data)
     checks = _parse_checks(data.get("statusCheckRollup", []))
 
-    head_repo_owner = data.get("headRepositoryOwner", {}).get("login", "")
-    head_repo_name = data.get("headRepository", {}).get("name", "")
+    # `gh pr view` may return JSON null for these fields (deleted fork, etc).
+    # `data.get("headRepository", {})` returns None (not the default) when the
+    # key exists with value null, so chain `or {}` to survive that path.
+    head_owner_obj = data.get("headRepositoryOwner") or {}
+    head_repo_obj = data.get("headRepository") or {}
+    head_repo_owner = head_owner_obj.get("login", "")
+    head_repo_name = head_repo_obj.get("name", "")
     head_repo = f"{head_repo_owner}/{head_repo_name}" if head_repo_owner and head_repo_name else ""
 
     report = HealthReport(

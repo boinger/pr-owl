@@ -14,13 +14,14 @@ pr-owl — @you — 6 open PR(s)
 ┏━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━┳━━━━━━━━━━━━━━┓
 ┃ Status       ┃ PR                    ┃ Title                          ┃ Blockers ┃ Updated      ┃
 ┡━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━╇━━━━━━━━━━━━━━┩
-│ CONFLICTS    │ acme/api#218          │ Add rate limiting middleware   │     2    │ 2026-03-15   │
-│ CI_FAILING   │ widgets/core#74       │ Fix timezone handling in cron  │     1    │ 2026-03-28   │
-│ BEHIND       │ acme/api#220          │ Update OpenAPI spec for v3     │     1    │ 2026-03-29   │
-│ BLOCKED      │ bigcorp/service#1042  │ Add gRPC health check endpoint │     1    │ 2026-03-20   │
-│ DRAFT        │ widgets/core#80       │ Refactor event pipeline        │     1    │ 2026-03-30   │
+│ CONFLICTS    │ acme/api#218          │ Add rate limiting middleware   │   ⚡ 2   │ 2026-03-15   │
+│ CI_FAILING   │ widgets/core#74       │ Fix timezone handling in cron  │   ⚡ 1   │ 2026-03-28   │
+│ BEHIND       │ acme/api#220          │ Update OpenAPI spec for v3     │   ⚡ 1   │ 2026-03-29   │
+│ BLOCKED      │ bigcorp/service#1042  │ Add gRPC health check endpoint │   👤 1   │ 2026-03-20   │
+│ DRAFT        │ widgets/core#80       │ Refactor event pipeline        │   ⚡ 1   │ 2026-03-30   │
 │ READY        │ acme/docs#55          │ Fix typo in quickstart guide   │          │ 2026-03-30   │
 └──────────────┴───────────────────────┴────────────────────────────────┴──────────┴──────────────┘
+⚡ = potentially fixable  👤 = waiting on others
 ```
 
 With `--details`, you get remediation steps for each PR:
@@ -35,10 +36,11 @@ acme/api#218: Add rate limiting middleware
     • Review required
   Steps:
     1. Resolve merge conflicts locally
-       $ git fetch upstream && git rebase upstream/main
+       $ git fetch <REMOTE> && git rebase <REMOTE>/main
     2. After resolving conflicts, force-push
        $ git push --force-with-lease
     3. Request review from required reviewers
+    4. (replace <REMOTE> with whichever remote tracks acme/api — see `git remote -v`)
   Summary: acme/api#218: 2 blocker(s) — Branch has merge conflicts, Review required.
 ```
 

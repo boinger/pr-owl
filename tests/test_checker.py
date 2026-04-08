@@ -186,3 +186,30 @@ class TestCheckPr:
         with patch("pr_owl.gh.view_pr", return_value=data):
             report = check_pr(sample_pr)
         assert "UNKNOWN" in report.error
+
+    def test_handles_null_head_repo(self, sample_pr):
+        """Deleted fork: headRepository and headRepositoryOwner are JSON null.
+
+        Previously this produced an AttributeError from `None.get(...)`.
+        Now the report renders normally with an empty head_repo string.
+        """
+        data = {
+            "number": 42,
+            "title": "t",
+            "url": "",
+            "isDraft": False,
+            "mergeStateStatus": "CLEAN",
+            "mergeable": "MERGEABLE",
+            "reviewDecision": "APPROVED",
+            "headRefName": "feature",
+            "baseRefName": "main",
+            "headRepository": None,
+            "headRepositoryOwner": None,
+            "statusCheckRollup": [],
+        }
+        with patch("pr_owl.gh.view_pr", return_value=data):
+            report = check_pr(sample_pr)
+        assert report.head_repo == ""
+        assert report.status == MergeStatus.READY
+        assert report.mergeable == "MERGEABLE"
+        assert not report.error

@@ -19,6 +19,9 @@ def plan_remediation(report: HealthReport) -> RemediationPlan:
         )
 
     steps: list[RemediationStep] = []
+    # Track whether any emitted command references <REMOTE> so we can append
+    # exactly one legend step at the end.
+    needs_remote_legend = False
 
     for blocker in report.blockers:
         match blocker.type:
@@ -34,17 +37,18 @@ def plan_remediation(report: HealthReport) -> RemediationPlan:
                     RemediationStep(
                         description="Fallback: rebase locally if update-branch fails",
                         command=(
-                            f"git fetch upstream && git rebase upstream/{report.base_ref}"
+                            f"git fetch <REMOTE> && git rebase <REMOTE>/{report.base_ref}"
                             " && git push --force-with-lease"
                         ),
                         automatable=False,
                     )
                 )
+                needs_remote_legend = True
             case BlockerType.HAS_CONFLICTS:
                 steps.append(
                     RemediationStep(
                         description="Resolve merge conflicts locally",
-                        command=f"git fetch upstream && git rebase upstream/{report.base_ref}",
+                        command=f"git fetch <REMOTE> && git rebase <REMOTE>/{report.base_ref}",
                         automatable=False,
                     )
                 )
@@ -55,6 +59,7 @@ def plan_remediation(report: HealthReport) -> RemediationPlan:
                         automatable=False,
                     )
                 )
+                needs_remote_legend = True
             case BlockerType.CHANGES_REQUESTED:
                 steps.append(RemediationStep(description="Address requested changes and request re-review"))
             case BlockerType.MISSING_REVIEWS:
@@ -83,6 +88,17 @@ def plan_remediation(report: HealthReport) -> RemediationPlan:
                 )
             case BlockerType.UNKNOWN_BLOCKER:
                 steps.append(RemediationStep(description=f"Unknown blocker: {blocker.description}"))
+
+    # Emit one legend step if any command used the <REMOTE> placeholder.
+    # pr-owl can't inspect local git state from inside the CLI, so we never
+    # guess the remote name — we leave it for the user (or the skill) to fill
+    # in after consulting `git remote -v`.
+    if needs_remote_legend:
+        steps.append(
+            RemediationStep(
+                description=(f"(replace <REMOTE> with whichever remote tracks {report.pr.repo} — see `git remote -v`)"),
+            )
+        )
 
     blocker_types = {b.type for b in report.blockers}
     if BlockerType.BEHIND_BASE in blocker_types and BlockerType.FAILING_CHECKS in blocker_types:

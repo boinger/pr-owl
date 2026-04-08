@@ -6,6 +6,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 
+from pr_owl.exceptions import PrOwlError
+
 
 class MergeStatus(str, Enum):
     READY = "READY"
@@ -76,22 +78,43 @@ class PRInfo:
     is_draft: bool
     created_at: str
     updated_at: str
+    # Parsed once in __post_init__, cached. init=False keeps it off the
+    # constructor signature; default=None is a type lie but correct at
+    # runtime because __post_init__ always sets it (or raises).
+    _updated_at_dt: datetime | None = field(default=None, init=False, repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.updated_at, str) or not self.updated_at:
+            raise PrOwlError(f"PRInfo.updated_at is empty or not a string: {self.updated_at!r}")
+        try:
+            self._updated_at_dt = datetime.fromisoformat(self.updated_at.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise PrOwlError(f"Malformed PRInfo.updated_at: {self.updated_at!r}") from exc
 
     @classmethod
     def from_search_result(cls, data: dict) -> PRInfo:
-        return cls(
-            number=data["number"],
-            title=data["title"],
-            repo=data["repository"]["nameWithOwner"],
-            url=data["url"],
-            is_draft=data.get("isDraft", False),
-            created_at=data["createdAt"],
-            updated_at=data["updatedAt"],
-        )
+        try:
+            repo_obj = data.get("repository") or {}
+            repo = repo_obj.get("nameWithOwner", "")
+            if not repo:
+                raise PrOwlError(f"Search result missing repository: {data!r}")
+            return cls(
+                number=data["number"],
+                title=data["title"],
+                repo=repo,
+                url=data.get("url", ""),
+                is_draft=data.get("isDraft", False),
+                created_at=data.get("createdAt", ""),
+                updated_at=data.get("updatedAt") or "",
+            )
+        except KeyError as exc:
+            raise PrOwlError(f"Search result missing required key {exc}: {data!r}") from exc
 
     @property
     def updated_at_dt(self) -> datetime:
-        return datetime.fromisoformat(self.updated_at.replace("Z", "+00:00"))
+        # _updated_at_dt is always populated by __post_init__ (or it raised).
+        assert self._updated_at_dt is not None
+        return self._updated_at_dt
 
 
 @dataclass
