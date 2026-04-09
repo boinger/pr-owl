@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 from dataclasses import asdict
 
@@ -25,7 +26,46 @@ _STATUS_STYLE: dict[MergeStatus, str] = {
     MergeStatus.UNKNOWN: "yellow",
 }
 
-console = Console(stderr=True)
+_NON_TTY_WIDTH_FLOOR = 120
+
+
+def _make_console() -> Console:
+    """Build the pr-owl stderr console with a width floor for non-TTY use.
+
+    Rich already honors the POSIX ``COLUMNS`` environment variable natively.
+    The only thing we need to add is a floor for the case where stderr isn't
+    a TTY AND the user hasn't set COLUMNS. In that case Rich falls back to
+    80 cols, which crops pr-owl's Blockers and Updated columns.
+
+    Logic:
+    - Real TTY: pass through, Rich auto-detects width.
+    - Non-TTY + COLUMNS set: pass through, user's explicit preference wins.
+    - Non-TTY + no COLUMNS: floor to 120 so the table renders fully.
+
+    Override: users who need a specific width (narrow terminal, CI that
+    mis-reports TTY, piped output) set ``COLUMNS=N pr-owl audit``. That's
+    the POSIX convention, no pr-owl-specific env var needed.
+
+    We check ``sys.stderr.isatty()`` directly rather than Rich's
+    ``Console.is_terminal``. Rich's check honors FORCE_COLOR (color hint
+    for pipes) and TTY_COMPATIBLE (env override for tools that fake TTY).
+    Neither tells us anything about *width* — a user piping to ``less -R``
+    still wants the table to fit. The file-descriptor level ``isatty()``
+    answers the right question.
+    """
+    try:
+        is_tty = sys.stderr.isatty()
+    except (AttributeError, ValueError):
+        # AttributeError: mock/fake stderr objects lack isatty.
+        # ValueError: closed file at teardown ("I/O operation on closed file").
+        is_tty = False
+
+    if not is_tty and "COLUMNS" not in os.environ:
+        return Console(stderr=True, width=_NON_TTY_WIDTH_FLOOR)
+    return Console(stderr=True)
+
+
+console = _make_console()
 
 
 def print_summary(reports: list[HealthReport], user: str) -> None:
@@ -42,7 +82,11 @@ def print_table(reports: list[HealthReport]) -> None:
     table = Table(show_header=True, header_style="bold")
     table.add_column("Status", width=12)
     table.add_column("PR", min_width=20)
-    table.add_column("Title", min_width=30)
+    # Title uses overflow="fold" so long titles (including the error snippet
+    # appended when report.error is set) wrap across multiple lines instead of
+    # being silently cropped with "…". Removing this will regress DX-1 — the
+    # error visibility fix. See tests/test_output.py::test_long_error_title_folds_not_crops.
+    table.add_column("Title", min_width=30, overflow="fold")
     table.add_column("Blockers", width=10, justify="center")
     table.add_column("Updated", width=12)
 

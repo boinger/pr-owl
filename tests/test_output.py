@@ -105,17 +105,22 @@ class TestPrintTable:
     def test_renders_error_snippet(self, sample_pr):
         """When a report has `error` set, the table shows a dim red snippet in Title.
 
-        Uses a wide console so Rich doesn't truncate the Title cell — real
-        narrow-terminal rendering may ellipsize, but that's layout behavior,
-        not a missing render.
+        Renders at 120 cols (the non-TTY floor). Before the overflow="fold"
+        fix, this test had to use width=200 to avoid Rich cropping the error
+        snippet with "…". With fold, long titles wrap across multiple lines
+        instead of cropping. We assert individual words from the error
+        appear somewhere in the output rather than a specific substring,
+        because Rich's wrap may split the snippet across line boundaries.
         """
         report = HealthReport(
             pr=sample_pr,
             status=MergeStatus.UNKNOWN,
             error="gh returned malformed response: Expecting value",
         )
-        output = _capture_console(print_table, [report], width=200)
-        assert "malformed response" in output
+        output = _capture_console(print_table, [report], width=120)
+        assert "malformed" in output
+        assert "response" in output
+        assert "Expecting" in output
 
     def test_no_error_snippet_when_clean(self, sample_pr):
         """Reports with no error render the title without any error prefix."""
@@ -123,6 +128,47 @@ class TestPrintTable:
         output = _capture_console(print_table, [report])
         # No "·" separator from the error snippet format
         assert "·" not in output
+
+    def test_table_fits_in_120_cols(self, sample_pr):
+        """Regression: at 120-col width (the non-TTY floor), all columns render.
+
+        The bug this test guards against: when Rich's default 80-col non-TTY
+        width hit the table, the Blockers and Updated columns got cropped out
+        of the rightmost edge entirely. 120 is the new floor, and all five
+        column headers must be visible.
+        """
+        reports = [
+            HealthReport(
+                pr=sample_pr,
+                status=MergeStatus.CONFLICTS,
+                blockers=[Blocker(type=BlockerType.HAS_CONFLICTS, description="c")],
+            ),
+        ]
+        output = _capture_console(print_table, reports, width=120)
+        assert "Status" in output
+        assert "PR" in output
+        assert "Title" in output
+        assert "Blockers" in output
+        assert "Updated" in output
+
+    def test_long_error_title_folds_not_crops(self, sample_pr):
+        """A long title + error snippet wraps across lines; no data is lost.
+
+        Rich has two overflow modes relevant here: "ellipsis" (default) crops
+        with "…", "fold" wraps across lines. With fold, the full error text
+        must be present somewhere in the output. If someone removes the
+        overflow="fold" argument from the Title column, this test catches it.
+        """
+        long_err = "gh returned malformed response: " + ("x" * 40)
+        report = HealthReport(pr=sample_pr, status=MergeStatus.UNKNOWN, error=long_err)
+        output = _capture_console(print_table, [report], width=120)
+        # The tail of the error (the x-string) should be present — proves
+        # the fold didn't crop it away.
+        assert "xxxxxxxxxx" in output
+        # The ellipsis crop marker should NOT be present next to our content.
+        # Rich uses "…" only when cropping, not when folding.
+        # (Note: Rich may use "…" elsewhere for unrelated truncation; we
+        # check that our specific x-tail made it through.)
 
 
 class TestPrintJson:
@@ -247,3 +293,77 @@ class TestPrintPlans:
         )
         output = _capture_console(print_plans, [plan])
         assert "Error:" not in output
+
+
+# ── _make_console helper tests ────────────────────────────────────────────
+#
+# NOTE on module-level `console` caching:
+# pr_owl.output.console is built once at first import via _make_console().
+# Monkeypatching env vars or file descriptors after import won't change
+# what `console` points to. Tests that need to verify _make_console's
+# behavior call it directly (below). Tests that need to verify print_table's
+# output under different console configurations use _capture_console()
+# above, which replaces the module-level console reference with a
+# test-owned Console before calling the function under test.
+#
+# The tests below monkeypatch sys.stderr to a StringIO so they work
+# deterministically regardless of how pytest is invoked. pytest's default
+# captured stderr is non-TTY, but `pytest -s` disables capture and uses
+# the real terminal, where sys.stderr.isatty() returns True in an
+# interactive session. StringIO.isatty() always returns False.
+
+
+class TestMakeConsole:
+    def test_floor_for_non_tty(self, monkeypatch):
+        """Non-TTY + no COLUMNS → 120-col floor."""
+        import io
+
+        monkeypatch.delenv("COLUMNS", raising=False)
+        monkeypatch.setattr("sys.stderr", io.StringIO())
+        from pr_owl.output import _make_console
+
+        assert _make_console().width == 120
+
+    def test_honors_columns_env(self, monkeypatch):
+        """Non-TTY + COLUMNS set → user's preference wins."""
+        import io
+
+        monkeypatch.setenv("COLUMNS", "80")
+        monkeypatch.setattr("sys.stderr", io.StringIO())
+        from pr_owl.output import _make_console
+
+        assert _make_console().width == 80
+
+    def test_module_level_console_uses_floor_after_reload(self, monkeypatch):
+        """Regression: the module-level `console` variable (what print_table
+        actually uses) gets width 120 on fresh import under non-TTY / no
+        COLUMNS.
+
+        This catches the class of bug where `_make_console()` works in
+        isolation but the module-level `console = _make_console()` line
+        silently does the wrong thing (typo, late binding, import order).
+        """
+        import importlib
+        import io
+        import sys
+
+        import pr_owl.output
+
+        # Capture original stderr for manual restore. monkeypatch's automatic
+        # teardown restores sys.stderr AFTER the test function returns — by
+        # then, pr_owl.output.console is already bound to the StringIO we
+        # installed, and subsequent tests using print_table would fail with
+        # "I/O operation on closed file". We restore manually in the finally.
+        original_stderr = sys.stderr
+
+        monkeypatch.delenv("COLUMNS", raising=False)
+        monkeypatch.setattr("sys.stderr", io.StringIO())
+        importlib.reload(pr_owl.output)
+
+        try:
+            assert pr_owl.output.console.width == 120
+        finally:
+            # Restore real stderr, then reload once more so the module's
+            # `console` binds to the real stderr for subsequent tests.
+            sys.stderr = original_stderr
+            importlib.reload(pr_owl.output)
