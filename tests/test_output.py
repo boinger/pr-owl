@@ -219,18 +219,17 @@ class TestPrintJson:
         assert data[0]["has_actionable_blockers"] is False
 
 
-class TestReportToDict:
-    def test_serialization(self, sample_pr):
-        report = HealthReport(
-            pr=sample_pr,
-            status=MergeStatus.BEHIND,
-            blockers=[Blocker(type=BlockerType.BEHIND_BASE, description="Behind")],
-        )
-        d = _report_to_dict(report)
-        assert d["status"] == "BEHIND"
-        assert d["blockers"][0]["type"] == "BEHIND_BASE"
-        assert d["blockers"][0]["actionable"] is True
-        assert d["has_actionable_blockers"] is True
+def test_report_to_dict_serialization(sample_pr):
+    report = HealthReport(
+        pr=sample_pr,
+        status=MergeStatus.BEHIND,
+        blockers=[Blocker(type=BlockerType.BEHIND_BASE, description="Behind")],
+    )
+    d = _report_to_dict(report)
+    assert d["status"] == "BEHIND"
+    assert d["blockers"][0]["type"] == "BEHIND_BASE"
+    assert d["blockers"][0]["actionable"] is True
+    assert d["has_actionable_blockers"] is True
 
 
 class TestPrintPlans:

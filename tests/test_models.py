@@ -23,20 +23,19 @@ class TestMergeStatus:
         assert str(MergeStatus.BEHIND) == "MergeStatus.BEHIND"
 
 
-class TestBlockerType:
-    def test_all_values(self):
-        assert len(BlockerType) == 8
-        expected = {
-            "BEHIND_BASE",
-            "HAS_CONFLICTS",
-            "MISSING_REVIEWS",
-            "CHANGES_REQUESTED",
-            "FAILING_CHECKS",
-            "IS_DRAFT",
-            "BRANCH_PROTECTION",
-            "UNKNOWN_BLOCKER",
-        }
-        assert {b.value for b in BlockerType} == expected
+def test_blocker_type_all_values():
+    assert len(BlockerType) == 8
+    expected = {
+        "BEHIND_BASE",
+        "HAS_CONFLICTS",
+        "MISSING_REVIEWS",
+        "CHANGES_REQUESTED",
+        "FAILING_CHECKS",
+        "IS_DRAFT",
+        "BRANCH_PROTECTION",
+        "UNKNOWN_BLOCKER",
+    }
+    assert {b.value for b in BlockerType} == expected
 
 
 class TestBlocker:
