@@ -294,6 +294,32 @@ class TestPrintPlans:
         output = _capture_console(print_plans, [plan])
         assert "Error:" not in output
 
+    def test_no_reframe_by_default(self, sample_pr):
+        """Without audited_user, no 'Viewing @X' notice appears."""
+        plan = RemediationPlan(
+            report=HealthReport(pr=sample_pr, status=MergeStatus.READY),
+            steps=[],
+            summary="Ready.",
+        )
+        output = _capture_console(print_plans, [plan])
+        assert "Viewing" not in output
+
+    def test_reframes_for_other_user(self, sample_pr):
+        """With audited_user set, the reframing notice is prepended once."""
+        plan = RemediationPlan(
+            report=HealthReport(
+                pr=sample_pr,
+                status=MergeStatus.BEHIND,
+                blockers=[Blocker(type=BlockerType.BEHIND_BASE, description="Behind")],
+            ),
+            steps=[RemediationStep(description="Update branch")],
+            summary="Rebase needed.",
+        )
+        output = _capture_console(print_plans, [plan], audited_user="octocat")
+        assert "Viewing @octocat's PRs" in output
+        # No double-@ even when the username is rendered into the notice
+        assert "@@octocat" not in output
+
 
 # ── _make_console helper tests ────────────────────────────────────────────
 #

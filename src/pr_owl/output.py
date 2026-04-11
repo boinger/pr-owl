@@ -158,8 +158,18 @@ def print_json(reports: list[HealthReport]) -> None:
     sys.stdout.write(json.dumps(data, indent=2) + "\n")
 
 
-def print_plans(plans: list[RemediationPlan]) -> None:
-    """Print detailed remediation plans."""
+def print_plans(plans: list[RemediationPlan], audited_user: str | None = None) -> None:
+    """Print detailed remediation plans.
+
+    When ``audited_user`` is set, the viewer is looking at someone else's PR
+    queue. Prepend a one-line notice making clear the steps below describe
+    what *that* user would need to do, not the viewer.
+    """
+    if audited_user:
+        console.print(
+            f"\n[dim]Viewing @{audited_user}'s PRs — the steps below describe "
+            f"what @{audited_user} would need to do to unblock each PR.[/dim]"
+        )
     for plan in plans:
         pr = plan.report.pr
         console.print(f"\n[bold]{pr.repo}#{pr.number}[/bold]: {pr.title}")

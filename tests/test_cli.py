@@ -234,6 +234,137 @@ class TestAuditCommand:
         assert result.exit_code == 0
         assert "pr-owl" in result.output or "version" in result.output.lower()
 
+    def test_author_flag_threaded_to_discovery(self):
+        """--author X passes through to discover_prs and skips get_current_user."""
+        pr = _sample_pr()
+        report = HealthReport(pr=pr, status=MergeStatus.READY)
+
+        with (
+            patch("pr_owl.cli.gh.ensure_gh", return_value="/usr/local/bin/gh"),
+            patch("pr_owl.cli.gh.check_auth"),
+            patch("pr_owl.cli.gh.get_current_user", return_value="testuser") as mock_user,
+            patch("pr_owl.cli.discover_prs", return_value=[pr]) as mock_discover,
+            patch("pr_owl.cli.check_pr", return_value=report),
+        ):
+            result = runner.invoke(cli, ["audit", "--author", "octocat"])
+        assert result.exit_code == 0
+        mock_discover.assert_called_once_with(author="octocat", repo="", org="")
+        mock_user.assert_not_called()
+
+    def test_author_flag_header_shows_target(self):
+        """--author X renders @X in the summary header, not the viewer."""
+        pr = _sample_pr()
+        report = HealthReport(pr=pr, status=MergeStatus.READY)
+
+        with (
+            patch("pr_owl.cli.gh.ensure_gh", return_value="/usr/local/bin/gh"),
+            patch("pr_owl.cli.gh.check_auth"),
+            patch("pr_owl.cli.gh.get_current_user", return_value="testuser"),
+            patch("pr_owl.cli.discover_prs", return_value=[pr]),
+            patch("pr_owl.cli.check_pr", return_value=report),
+        ):
+            result = runner.invoke(cli, ["audit", "--author", "octocat"])
+        assert result.exit_code == 0
+        assert "@octocat" in result.output
+        assert "@testuser" not in result.output
+
+    def test_default_author_still_uses_current_user(self):
+        """Regression: default invocation still resolves the viewer via get_current_user."""
+        pr = _sample_pr()
+        report = HealthReport(pr=pr, status=MergeStatus.READY)
+
+        with (
+            patch("pr_owl.cli.gh.ensure_gh", return_value="/usr/local/bin/gh"),
+            patch("pr_owl.cli.gh.check_auth"),
+            patch("pr_owl.cli.gh.get_current_user", return_value="testuser") as mock_user,
+            patch("pr_owl.cli.discover_prs", return_value=[pr]) as mock_discover,
+            patch("pr_owl.cli.check_pr", return_value=report),
+        ):
+            result = runner.invoke(cli, ["audit"])
+        assert result.exit_code == 0
+        mock_user.assert_called_once()
+        mock_discover.assert_called_once_with(author="@me", repo="", org="")
+        assert "@testuser" in result.output
+
+    def test_author_details_shows_reframing(self):
+        """--author X --details prints the 'Viewing @X's PRs' notice."""
+        pr = _sample_pr()
+        report = HealthReport(
+            pr=pr,
+            status=MergeStatus.BEHIND,
+            blockers=[Blocker(type=BlockerType.BEHIND_BASE, description="Behind base")],
+        )
+
+        with (
+            patch("pr_owl.cli.gh.ensure_gh", return_value="/usr/local/bin/gh"),
+            patch("pr_owl.cli.gh.check_auth"),
+            patch("pr_owl.cli.gh.get_current_user", return_value="testuser"),
+            patch("pr_owl.cli.discover_prs", return_value=[pr]),
+            patch("pr_owl.cli.check_pr", return_value=report),
+        ):
+            result = runner.invoke(cli, ["audit", "--author", "octocat", "--details"])
+        assert result.exit_code == 0
+        assert "Viewing @octocat's PRs" in result.output
+
+    def test_author_with_json_unchanged(self):
+        """--author X --json produces well-formed JSON identical in shape to default."""
+        pr = _sample_pr()
+        report = HealthReport(pr=pr, status=MergeStatus.READY)
+
+        with (
+            patch("pr_owl.cli.gh.ensure_gh", return_value="/usr/local/bin/gh"),
+            patch("pr_owl.cli.gh.check_auth"),
+            patch("pr_owl.cli.gh.get_current_user", return_value="testuser"),
+            patch("pr_owl.cli.discover_prs", return_value=[pr]),
+            patch("pr_owl.cli.check_pr", return_value=report),
+        ):
+            result = runner.invoke(cli, ["audit", "--author", "octocat", "--json"])
+        assert result.exit_code == 0
+        import json
+
+        data = json.loads(result.output)
+        assert isinstance(data, list)
+        assert len(data) == 1
+        assert data[0]["status"] == "READY"
+        # JSON must not contain the human-readable reframing notice
+        assert "Viewing" not in result.output
+
+    def test_author_normalizes_leading_at(self):
+        """--author @octocat is normalized to octocat (no @@ in output, no broken gh call)."""
+        pr = _sample_pr()
+        report = HealthReport(pr=pr, status=MergeStatus.READY)
+
+        with (
+            patch("pr_owl.cli.gh.ensure_gh", return_value="/usr/local/bin/gh"),
+            patch("pr_owl.cli.gh.check_auth"),
+            patch("pr_owl.cli.gh.get_current_user", return_value="testuser"),
+            patch("pr_owl.cli.discover_prs", return_value=[pr]) as mock_discover,
+            patch("pr_owl.cli.check_pr", return_value=report),
+        ):
+            result = runner.invoke(cli, ["audit", "--author", "@octocat"])
+        assert result.exit_code == 0
+        mock_discover.assert_called_once_with(author="octocat", repo="", org="")
+        assert "@octocat" in result.output
+        assert "@@octocat" not in result.output
+
+    def test_author_at_me_sentinel_preserved(self):
+        """--author @me explicitly behaves identically to default; @me is not stripped."""
+        pr = _sample_pr()
+        report = HealthReport(pr=pr, status=MergeStatus.READY)
+
+        with (
+            patch("pr_owl.cli.gh.ensure_gh", return_value="/usr/local/bin/gh"),
+            patch("pr_owl.cli.gh.check_auth"),
+            patch("pr_owl.cli.gh.get_current_user", return_value="testuser") as mock_user,
+            patch("pr_owl.cli.discover_prs", return_value=[pr]) as mock_discover,
+            patch("pr_owl.cli.check_pr", return_value=report),
+        ):
+            result = runner.invoke(cli, ["audit", "--author", "@me"])
+        assert result.exit_code == 0
+        mock_user.assert_called_once()
+        mock_discover.assert_called_once_with(author="@me", repo="", org="")
+        assert "@testuser" in result.output
+
     def test_unknown_retry_resolves(self):
         """UNKNOWN mergeable PRs are retried and resolved."""
         pr1 = _sample_pr(1)

@@ -83,6 +83,10 @@ pr-owl audit --repo owner/repo
 # Scope to an organization
 pr-owl audit --org myorg
 
+# Audit another user's PR queue (read-only — for teammates and managers)
+pr-owl audit --author octocat
+pr-owl audit -A octocat --details   # see what they'd need to do to unblock
+
 # Filter by status
 pr-owl audit --status CONFLICTS
 

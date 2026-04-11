@@ -29,6 +29,16 @@ logger = logging.getLogger(__name__)
 _UNKNOWN_RETRY_DELAY = 2.0  # seconds to wait before retrying UNKNOWN mergeable states
 
 
+def _normalize_author(ctx: click.Context, param: click.Parameter, value: str) -> str:
+    # Treat `--author octocat` and `--author @octocat` as equivalent so users
+    # who instinctively type the @-prefix don't end up with `@@octocat` in
+    # output or a broken `gh search prs --author @octocat` call. The literal
+    # `@me` sentinel is preserved — gh interprets it as a keyword.
+    if value and value != "@me" and value.startswith("@"):
+        return value.lstrip("@")
+    return value
+
+
 @click.group(invoke_without_command=True)
 @click.option("--verbose", "-v", is_flag=True, help="Enable debug logging.")
 @click.version_option(version=__version__)
@@ -46,6 +56,14 @@ def cli(ctx: click.Context, verbose: bool) -> None:
 @cli.command()
 @click.option("--repo", "-R", default="", help="Scope to owner/repo.")
 @click.option("--org", default="", help="Scope to organization.")
+@click.option(
+    "--author",
+    "-A",
+    "author",
+    default="@me",
+    callback=_normalize_author,
+    help="GitHub username to audit. Defaults to the authenticated user.",
+)
 @click.option("--stale-days", type=int, default=None, help="Only show PRs inactive for N+ days.")
 @click.option("--status", "status_filter", default="", help="Filter by MergeStatus value.")
 @click.option("--json", "json_output", is_flag=True, help="JSON output to stdout.")
@@ -54,6 +72,7 @@ def cli(ctx: click.Context, verbose: bool) -> None:
 def audit(
     repo: str,
     org: str,
+    author: str,
     stale_days: int | None,
     status_filter: str,
     json_output: bool,
@@ -71,8 +90,9 @@ def audit(
 
     # Discover
     try:
-        user = gh.get_current_user()
-        prs = discover_prs(repo=repo, org=org)
+        viewing_other = author != "@me"
+        user = author if viewing_other else gh.get_current_user()
+        prs = discover_prs(author=author, repo=repo, org=org)
     except PrOwlError as exc:
         console.print(f"[red]Error:[/red] {exc}")
         sys.exit(1)
@@ -173,6 +193,6 @@ def audit(
     print_summary(reports, user)
 
     if show_plan:
-        print_plans(plans)
+        print_plans(plans, audited_user=user if viewing_other else None)
     else:
         print_table(reports)
