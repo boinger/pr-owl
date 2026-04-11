@@ -39,6 +39,57 @@ def _normalize_author(ctx: click.Context, param: click.Parameter, value: str) ->
     return value
 
 
+def _retry_unknown_reports(
+    reports: list[HealthReport],
+    *,
+    workers: int,
+    audit_start: float,
+    json_output: bool,
+) -> None:
+    """Retry PRs whose mergeable state came back UNKNOWN.
+
+    GitHub sometimes returns ``mergeable=UNKNOWN`` while still computing
+    mergeability immediately after a push. A short retry usually resolves
+    them. Mutates ``reports`` in place — successful retries replace the
+    original entry; unresolved entries are left as-is.
+    """
+    unknown_indices = [i for i, r in enumerate(reports) if r.mergeable == "UNKNOWN"]
+    if not unknown_indices:
+        return
+
+    elapsed = time.monotonic() - audit_start
+    delay = max(0.0, _UNKNOWN_RETRY_DELAY - elapsed)
+    logger.info("Retrying %d UNKNOWN PR(s) after %.1fs delay...", len(unknown_indices), delay)
+    if delay > 0:
+        # Skip the decorative notice in JSON mode so we never risk
+        # contaminating machine-readable output under stream-mixing
+        # test harnesses or pipes.
+        if not json_output:
+            console.print(
+                f"[dim]Retrying {len(unknown_indices)} PR(s) in UNKNOWN mergeable state after {delay:.1f}s...[/dim]"
+            )
+        time.sleep(delay)
+
+    resolved = 0
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        future_to_idx = {executor.submit(check_pr, reports[i].pr): i for i in unknown_indices}
+        for future in as_completed(future_to_idx):
+            idx = future_to_idx[future]
+            try:
+                new_report = future.result()
+            except (PrOwlError, KeyError, json.JSONDecodeError, AttributeError, TypeError):
+                continue  # keep original UNKNOWN report
+            if new_report.mergeable != "UNKNOWN":
+                reports[idx] = new_report
+                resolved += 1
+
+    still_unknown = len(unknown_indices) - resolved
+    if resolved:
+        logger.info("Resolved %d PR(s); %d still UNKNOWN.", resolved, still_unknown)
+    elif still_unknown:
+        logger.info("All %d PR(s) still UNKNOWN after retry.", still_unknown)
+
+
 @click.group(invoke_without_command=True)
 @click.option("--verbose", "-v", is_flag=True, help="Enable debug logging.")
 @click.version_option(version=__version__)
@@ -137,40 +188,12 @@ def audit(
 
     # Retry PRs where GitHub returned UNKNOWN mergeable state
     if has_unknowns:
-        unknown_indices = [i for i, r in enumerate(reports) if r.mergeable == "UNKNOWN"]
-        if unknown_indices:
-            elapsed = time.monotonic() - audit_start
-            delay = max(0.0, _UNKNOWN_RETRY_DELAY - elapsed)
-            logger.info("Retrying %d UNKNOWN PR(s) after %.1fs delay...", len(unknown_indices), delay)
-            if delay > 0:
-                # Skip the decorative notice in JSON mode so we never risk
-                # contaminating machine-readable output under stream-mixing
-                # test harnesses or pipes.
-                if not json_output:
-                    console.print(
-                        f"[dim]Retrying {len(unknown_indices)} PR(s) in UNKNOWN mergeable state "
-                        f"after {delay:.1f}s...[/dim]"
-                    )
-                time.sleep(delay)
-
-            resolved = 0
-            with ThreadPoolExecutor(max_workers=effective_workers) as executor:
-                future_to_idx = {executor.submit(check_pr, reports[i].pr): i for i in unknown_indices}
-                for future in as_completed(future_to_idx):
-                    idx = future_to_idx[future]
-                    try:
-                        new_report = future.result()
-                        if new_report.mergeable != "UNKNOWN":
-                            reports[idx] = new_report
-                            resolved += 1
-                    except (PrOwlError, KeyError, json.JSONDecodeError, AttributeError, TypeError):
-                        pass  # keep original UNKNOWN report
-
-            still_unknown = len(unknown_indices) - resolved
-            if resolved:
-                logger.info("Resolved %d PR(s); %d still UNKNOWN.", resolved, still_unknown)
-            elif still_unknown:
-                logger.info("All %d PR(s) still UNKNOWN after retry.", still_unknown)
+        _retry_unknown_reports(
+            reports,
+            workers=effective_workers,
+            audit_start=audit_start,
+            json_output=json_output,
+        )
 
     # Filter by status
     if status_filter:
