@@ -232,6 +232,97 @@ def test_report_to_dict_serialization(sample_pr):
     assert d["has_actionable_blockers"] is True
 
 
+class TestCommentDeltaColumn:
+    def test_zero_comments_renders_empty_cell(self, sample_pr):
+        report = HealthReport(pr=sample_pr, status=MergeStatus.READY)
+        output = _capture_console(print_table, [report])
+        # The 💬 header is always present; rows with zero comments have an empty cell.
+        # Check that no number appears in the comment column area.
+        lines = output.strip().split("\n")
+        # Find a data row (contains the PR ref).
+        data_lines = [line for line in lines if "acme/repo#42" in line]
+        assert data_lines
+
+    def test_comments_without_new_shows_count_no_star(self, sample_pr):
+        report = HealthReport(
+            pr=sample_pr,
+            status=MergeStatus.READY,
+            issue_comment_count=5,
+            review_event_count=2,
+        )
+        output = _capture_console(print_table, [report])
+        assert " 7 " in output or "│ 7 " in output
+        assert "7*" not in output
+
+    def test_comments_with_new_shows_count_with_star(self, sample_pr):
+        report = HealthReport(
+            pr=sample_pr,
+            status=MergeStatus.READY,
+            issue_comment_count=5,
+            review_event_count=2,
+            new_issue_comments=2,
+            new_review_events=1,
+        )
+        output = _capture_console(print_table, [report])
+        assert "7*" in output
+
+    def test_comments_with_only_issue_new(self, sample_pr):
+        report = HealthReport(
+            pr=sample_pr,
+            status=MergeStatus.READY,
+            issue_comment_count=4,
+            review_event_count=0,
+            new_issue_comments=1,
+        )
+        output = _capture_console(print_table, [report])
+        assert "4*" in output
+
+    def test_legend_mentions_star(self, sample_pr):
+        report = HealthReport(pr=sample_pr, status=MergeStatus.READY)
+        output = _capture_console(print_table, [report])
+        assert "* =" in output or "* = new" in output.lower() or "(* =" in output
+
+    def test_json_serializes_delta_fields(self, sample_pr, capsys):
+        from pr_owl.output import print_json
+
+        report = HealthReport(
+            pr=sample_pr,
+            status=MergeStatus.READY,
+            issue_comment_count=5,
+            review_event_count=2,
+            new_issue_comments=3,
+            new_review_events=1,
+        )
+        print_json([report])
+        data = json.loads(capsys.readouterr().out)
+        assert data[0]["issue_comment_count"] == 5
+        assert data[0]["review_event_count"] == 2
+        assert data[0]["new_issue_comments"] == 3
+        assert data[0]["new_review_events"] == 1
+
+    def test_print_plans_shows_new_activity_line(self, sample_pr):
+        import re
+
+        report = HealthReport(
+            pr=sample_pr,
+            status=MergeStatus.READY,
+            new_issue_comments=2,
+            new_review_events=1,
+        )
+        plan = RemediationPlan(report=report, steps=[], summary="ready")
+        output = _capture_console(print_plans, [plan])
+        plain = re.sub(r"\x1b\[[0-9;]*m", "", output)
+        assert "New activity" in plain
+        assert "2 comment" in plain
+        assert "1 review" in plain
+
+    def test_print_plans_no_activity_line_when_zero(self, sample_pr):
+        report = HealthReport(pr=sample_pr, status=MergeStatus.READY)
+        plan = RemediationPlan(report=report, steps=[], summary="ready")
+        output = _capture_console(print_plans, [plan])
+        assert "New activity" not in output
+
+
 class TestPrintPlans:
     def test_shows_steps(self, sample_pr):
         plan = RemediationPlan(

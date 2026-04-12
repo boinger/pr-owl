@@ -43,7 +43,15 @@ Write JSON to temp file (NEVER dump to terminal), then summarize to yourself:
 pr-owl audit --json 2>/dev/null > /tmp/pr-owl-audit.json && echo "Audit saved"
 ```
 
-Then use the Read tool to read `/tmp/pr-owl-audit.json`. Parse it yourself to build the fix plan. Present a brief summary to the user of what you found and what you're about to do.
+Then use the Read tool to read `/tmp/pr-owl-audit.json`. Parse it yourself to build the fix plan.
+
+**Before processing the fix plan, check for new comment activity.** Each report has `new_issue_comments` and `new_review_events` fields populated against the user's last `pr-owl audit` run. Any PR where `new_issue_comments + new_review_events > 0` has feedback the user has not yet seen since their previous audit. List those PRs to the user FIRST, with their URLs, before starting the fix workflow:
+
+> Heads up: PR1 (URL), PR2 (URL) have new activity since your last audit. You may want to read those before I start fixing.
+
+This is non-blocking — proceed with the fix workflow after surfacing it. The point is to make sure new feedback is visible BEFORE the user gets distracted by the rebase/conflict-resolution dance.
+
+Then present a brief summary of what you found and what you're about to do.
 
 ### Step 2: For each non-ready PR, fix it
 
@@ -185,3 +193,6 @@ pr-owl audit --details 2>&1
 - `--workers` controls concurrent health checks (default 5, 1=serial for debugging).
 - JSON goes to stdout, table/details go to stderr.
 - `headRepository.nameWithOwner` is always empty from `gh pr view`. The JSON uses `headRepositoryOwner.login` + `headRepository.name` to construct `head_repo`.
+- **Comment tracking fields**: Each report includes `issue_comment_count` and `review_event_count` (current totals) plus `new_issue_comments` and `new_review_events` (delta since the user's previous audit, computed against `~/.local/state/pr-owl/seen.json`). The deltas are auto-marked as seen on each `pr-owl audit` run that does not pass `--peek` or `--no-state`. Use the deltas to surface unread feedback before starting any fix workflow (see Fix Mode Step 1).
+- **--peek**: read-only audit. Loads state, computes deltas, shows them, but does NOT update state. Use when you only want to glance at activity without marking it seen.
+- **--no-state**: skip state I/O entirely. Use for dry runs or when you don't want to touch the state file.

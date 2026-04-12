@@ -13,7 +13,7 @@ import click
 from pr_owl import __version__, gh
 from pr_owl.checker import check_pr
 from pr_owl.discovery import discover_prs, filter_stale
-from pr_owl.exceptions import GhAuthError, GhNotFoundError, PrOwlError
+from pr_owl.exceptions import GhAuthError, GhNotFoundError, PrOwlError, StateError
 from pr_owl.models import HealthReport, MergeStatus
 from pr_owl.output import (
     console,
@@ -23,6 +23,7 @@ from pr_owl.output import (
     print_table,
 )
 from pr_owl.planner import plan_remediation
+from pr_owl.state import compute_delta, load_state, save_state, state_path
 
 logger = logging.getLogger(__name__)
 
@@ -90,6 +91,20 @@ def _retry_unknown_reports(
         logger.info("All %d PR(s) still UNKNOWN after retry.", still_unknown)
 
 
+def _annotate_comment_deltas(reports: list[HealthReport], state: dict) -> None:
+    """Mutate each report with new_issue_comments / new_review_events vs `state`.
+
+    Must run after _retry_unknown_reports so retry-resolved counts are
+    annotated against the loaded baseline (not zeros from the failed
+    initial check). Must run before --status filtering so deltas display
+    correctly for the filtered subset.
+    """
+    for report in reports:
+        new_issue, new_review = compute_delta(report, state)
+        report.new_issue_comments = new_issue
+        report.new_review_events = new_review
+
+
 @click.group(invoke_without_command=True)
 @click.option("--verbose", "-v", is_flag=True, help="Enable debug logging.")
 @click.version_option(version=__version__)
@@ -116,10 +131,26 @@ def cli(ctx: click.Context, verbose: bool) -> None:
     help="GitHub username to audit. Defaults to the authenticated user.",
 )
 @click.option("--stale-days", type=int, default=None, help="Only show PRs inactive for N+ days.")
-@click.option("--status", "status_filter", default="", help="Filter by MergeStatus value.")
+@click.option(
+    "--status",
+    "status_filter",
+    default="",
+    help="Filter by MergeStatus value. Skips state save (deltas for filtered PRs would be lost).",
+)
 @click.option("--json", "json_output", is_flag=True, help="JSON output to stdout.")
 @click.option("--details", "show_plan", is_flag=True, help="Show detailed blockers and remediation steps.")
 @click.option("--workers", type=int, default=5, help="Concurrent health check workers (1=serial).")
+@click.option(
+    "--no-state",
+    is_flag=True,
+    help="Skip loading and saving the comment-tracking state file. Use for dry runs or test isolation.",
+)
+@click.option(
+    "--peek",
+    is_flag=True,
+    help="Show comment deltas without marking them as seen. State is loaded but not saved. "
+    "Useful when you want to glance at activity but might get distracted before reading it.",
+)
 def audit(
     repo: str,
     org: str,
@@ -129,6 +160,8 @@ def audit(
     json_output: bool,
     show_plan: bool,
     workers: int,
+    no_state: bool,
+    peek: bool,
 ) -> None:
     """Audit your open PRs for mergeability."""
     # Preflight
@@ -167,6 +200,31 @@ def audit(
                 print_json([])
             return
 
+    # Load comment-tracking state (skip when not applicable to a personal audit).
+    # State is per-authenticated-user; we never load or save when auditing
+    # someone else's queue (would pollute the local user's seen.json with
+    # phantom deltas). We also skip when --no-state is set or --status filters
+    # the result (saving a filtered run would erase deltas for hidden PRs).
+    # --peek loads but does not save (the escape hatch for distracted readers).
+    state_skip_reason = ""
+    if no_state:
+        state_skip_reason = "--no-state"
+    elif viewing_other:
+        state_skip_reason = "--author other-user"
+    elif status_filter:
+        state_skip_reason = "--status filter"
+
+    state: dict = {}
+    state_was_empty = False
+    if not state_skip_reason:
+        try:
+            state = load_state()
+            state_was_empty = not (state.get("prs") or {})
+        except StateError as exc:
+            console.print(f"[yellow]Warning:[/yellow] {exc}")
+            state = {}
+            state_was_empty = True
+
     # Check health (concurrent)
     reports: list[HealthReport] = []
     effective_workers = max(1, min(workers, len(prs)))
@@ -195,6 +253,13 @@ def audit(
             json_output=json_output,
         )
 
+    # Annotate comment deltas. MUST run after retry (so retry-resolved counts
+    # are annotated against the loaded baseline) and BEFORE the status filter
+    # (so deltas display correctly for the filtered subset). When state was
+    # not loaded the deltas are all zero, which is the correct fallback —
+    # everything looks "first-seen."
+    _annotate_comment_deltas(reports, state)
+
     # Filter by status
     if status_filter:
         try:
@@ -208,6 +273,19 @@ def audit(
     # Plan
     plans = [plan_remediation(r) for r in reports]
 
+    # Persist updated state. Skipped under any of:
+    # - --no-state (explicit opt-out)
+    # - --peek (load happened, save deliberately skipped)
+    # - --author other (state is per-authenticated-user)
+    # - --status filter (deltas for filtered-out PRs would be lost)
+    # The state was not loaded under the same conditions (except --peek), so
+    # the dict is either empty or the loaded state — save_state handles both.
+    if not state_skip_reason and not peek:
+        try:
+            save_state(state, reports)
+        except StateError as exc:
+            console.print(f"[yellow]Warning:[/yellow] could not save state: {exc}")
+
     # Output
     if json_output:
         print_json(reports)
@@ -219,3 +297,20 @@ def audit(
         print_plans(plans, audited_user=user if viewing_other else None)
     else:
         print_table(reports)
+
+    # First-run hint: tell the user the feature is working when their first
+    # audit shows no deltas because there's nothing to compare against yet.
+    # Suppressed in JSON mode and when state was skipped entirely.
+    if state_was_empty and not state_skip_reason and not peek:
+        console.print("[dim]💬 Comment tracking enabled — new activity will appear on subsequent runs.[/dim]")
+
+
+@cli.group()
+def state() -> None:
+    """Inspect or manage the comment-tracking state file."""
+
+
+@state.command("path")
+def state_path_cmd() -> None:
+    """Print the resolved state file path and exit."""
+    click.echo(str(state_path()))

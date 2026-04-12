@@ -448,3 +448,136 @@ class TestAuditCommand:
         mock_check_cm.assert_called_once()
         # sleep should not be called (no retry delay)
         mock_sleep_cm.assert_not_called()
+
+
+class TestStateFlags:
+    """Audit pipeline interaction with state load/save and the new flags."""
+
+    def _isolate(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+        return tmp_path / "pr-owl" / "seen.json"
+
+    def _run_audit(self, pr, report, *args):
+        patches = _mock_preflight() + [
+            patch("pr_owl.cli.discover_prs", return_value=[pr]),
+            patch("pr_owl.cli.check_pr", return_value=report),
+        ]
+        with patches[0], patches[1], patches[2], patches[3], patches[4]:
+            return runner.invoke(cli, ["audit", *args])
+
+    def test_default_audit_creates_state_file(self, tmp_path, monkeypatch):
+        state_file = self._isolate(monkeypatch, tmp_path)
+        pr = _sample_pr(1)
+        report = HealthReport(pr=pr, status=MergeStatus.READY, issue_comment_count=3, review_event_count=1)
+        result = self._run_audit(pr, report)
+        assert result.exit_code == 0
+        assert state_file.exists()
+        import json as _json
+
+        data = _json.loads(state_file.read_text())
+        assert data["prs"][pr.url]["issue_comments"] == 3
+        assert data["prs"][pr.url]["review_events"] == 1
+
+    def test_first_run_emits_hint(self, tmp_path, monkeypatch):
+        self._isolate(monkeypatch, tmp_path)
+        pr = _sample_pr(1)
+        report = HealthReport(pr=pr, status=MergeStatus.READY)
+        result = self._run_audit(pr, report)
+        assert "Comment tracking enabled" in result.output
+
+    def test_second_run_no_hint(self, tmp_path, monkeypatch):
+        self._isolate(monkeypatch, tmp_path)
+        pr = _sample_pr(1)
+        report = HealthReport(pr=pr, status=MergeStatus.READY, issue_comment_count=2)
+        # First run primes state.
+        self._run_audit(pr, report)
+        # Second run should not show the first-run hint.
+        result = self._run_audit(pr, report)
+        assert "Comment tracking enabled" not in result.output
+
+    def test_no_state_skips_state_file(self, tmp_path, monkeypatch):
+        state_file = self._isolate(monkeypatch, tmp_path)
+        pr = _sample_pr(1)
+        report = HealthReport(pr=pr, status=MergeStatus.READY, issue_comment_count=5)
+        result = self._run_audit(pr, report, "--no-state")
+        assert result.exit_code == 0
+        assert not state_file.exists()
+
+    def test_status_filter_skips_save(self, tmp_path, monkeypatch):
+        state_file = self._isolate(monkeypatch, tmp_path)
+        pr = _sample_pr(1)
+        report = HealthReport(pr=pr, status=MergeStatus.READY, issue_comment_count=5)
+        result = self._run_audit(pr, report, "--status", "READY")
+        assert result.exit_code == 0
+        # No save with --status filter.
+        assert not state_file.exists()
+
+    def test_author_other_skips_state(self, tmp_path, monkeypatch):
+        state_file = self._isolate(monkeypatch, tmp_path)
+        pr = _sample_pr(1)
+        report = HealthReport(pr=pr, status=MergeStatus.READY, issue_comment_count=5)
+        result = self._run_audit(pr, report, "--author", "octocat")
+        assert result.exit_code == 0
+        assert not state_file.exists()
+
+    def test_peek_loads_state_but_skips_save(self, tmp_path, monkeypatch):
+        state_file = self._isolate(monkeypatch, tmp_path)
+        pr = _sample_pr(1)
+        # Prime state with a baseline.
+        baseline = HealthReport(pr=pr, status=MergeStatus.READY, issue_comment_count=2, review_event_count=0)
+        self._run_audit(pr, baseline)
+        baseline_mtime = state_file.stat().st_mtime
+        # Now run --peek with a higher count.
+        bumped = HealthReport(pr=pr, status=MergeStatus.READY, issue_comment_count=5, review_event_count=0)
+        import time as _time
+
+        _time.sleep(0.01)
+        result = self._run_audit(pr, bumped, "--peek")
+        assert result.exit_code == 0
+        # New activity should display with * indicator.
+        assert "5*" in result.output
+        # File mtime should be unchanged — peek did not save.
+        assert state_file.stat().st_mtime == baseline_mtime
+
+    def test_delta_displayed_on_normal_run(self, tmp_path, monkeypatch):
+        self._isolate(monkeypatch, tmp_path)
+        pr = _sample_pr(1)
+        baseline = HealthReport(pr=pr, status=MergeStatus.READY, issue_comment_count=2)
+        self._run_audit(pr, baseline)
+        bumped = HealthReport(pr=pr, status=MergeStatus.READY, issue_comment_count=5)
+        result = self._run_audit(pr, bumped)
+        assert "5*" in result.output
+
+    def test_delta_marked_seen_after_normal_run(self, tmp_path, monkeypatch):
+        self._isolate(monkeypatch, tmp_path)
+        pr = _sample_pr(1)
+        baseline = HealthReport(pr=pr, status=MergeStatus.READY, issue_comment_count=2)
+        self._run_audit(pr, baseline)
+        bumped = HealthReport(pr=pr, status=MergeStatus.READY, issue_comment_count=5)
+        self._run_audit(pr, bumped)  # marks as seen
+        result = self._run_audit(pr, bumped)  # third run, no new activity
+        # Count should show without * (no new activity). The * only appears
+        # when there are new comments since last audit.
+        assert "5*" not in result.output
+
+    def test_error_path_does_not_clobber_baseline(self, tmp_path, monkeypatch):
+        state_file = self._isolate(monkeypatch, tmp_path)
+        pr = _sample_pr(1)
+        good = HealthReport(pr=pr, status=MergeStatus.READY, issue_comment_count=10)
+        self._run_audit(pr, good)
+        # Now simulate a failure for the same PR.
+        errored = HealthReport(pr=pr, status=MergeStatus.UNKNOWN, error="api failure")
+        self._run_audit(pr, errored)
+        import json as _json
+
+        data = _json.loads(state_file.read_text())
+        # Baseline must be preserved at 10, NOT clobbered by the error path's 0.
+        assert data["prs"][pr.url]["issue_comments"] == 10
+
+
+class TestStatePathSubcommand:
+    def test_state_path_prints_resolved_path(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+        result = runner.invoke(cli, ["state", "path"])
+        assert result.exit_code == 0
+        assert str(tmp_path / "pr-owl" / "seen.json") in result.output

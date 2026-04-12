@@ -11,18 +11,24 @@ $ pr-owl audit
 
 pr-owl — @you — 6 open PR(s)
 
-┏━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━┳━━━━━━━━━━━━━━┓
-┃ Status       ┃ PR                    ┃ Title                          ┃ Blockers ┃ Updated      ┃
-┡━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━╇━━━━━━━━━━━━━━┩
-│ CONFLICTS    │ acme/api#218          │ Add rate limiting middleware   │   ⚡ 2   │ 2026-03-15   │
-│ CI_FAILING   │ widgets/core#74       │ Fix timezone handling in cron  │   ⚡ 1   │ 2026-03-28   │
-│ BEHIND       │ acme/api#220          │ Update OpenAPI spec for v3     │   ⚡ 1   │ 2026-03-29   │
-│ BLOCKED      │ bigcorp/service#1042  │ Add gRPC health check endpoint │   👤 1   │ 2026-03-20   │
-│ DRAFT        │ widgets/core#80       │ Refactor event pipeline        │   ⚡ 1   │ 2026-03-30   │
-│ READY        │ acme/docs#55          │ Fix typo in quickstart guide   │          │ 2026-03-30   │
-└──────────────┴───────────────────────┴────────────────────────────────┴──────────┴──────────────┘
-⚡ = potentially fixable  👤 = waiting on others
+┏━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━┳━━━━━┳━━━━━━━━━━━━┓
+┃ Status     ┃ PR                  ┃ Title                        ┃ Blockers ┃  💬 ┃ Updated    ┃
+┡━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━╇━━━━━╇━━━━━━━━━━━━┩
+│ CONFLICTS  │ acme/api#218        │ Add rate limiting middleware │   ⚡ 2   │ 8*  │ 2026-03-15 │
+│ CI_FAILING │ widgets/core#74     │ Fix timezone handling        │   ⚡ 1   │  3  │ 2026-03-28 │
+│ BEHIND     │ acme/api#220        │ Update OpenAPI spec for v3   │   ⚡ 1   │ 2*  │ 2026-03-29 │
+│ BLOCKED    │ bigcorp/svc#1042    │ Add gRPC health check        │   👤 1   │  1  │ 2026-03-20 │
+│ DRAFT      │ widgets/core#80     │ Refactor event pipeline      │   ⚡ 1   │     │ 2026-03-30 │
+│ READY      │ acme/docs#55        │ Fix typo in quickstart       │          │     │ 2026-03-30 │
+└────────────┴─────────────────────┴──────────────────────────────┴──────────┴─────┴────────────┘
+⚡ = potentially fixable  👤 = waiting on others  💬 = comment count (* = new since last audit)
 ```
+
+The `💬` column shows the total comment count (issue comments + review events)
+for each PR. A `*` suffix marks PRs with new activity since your last audit.
+The first time you run `pr-owl audit` it establishes the baseline; subsequent
+runs flag any changes. See the [Comment tracking](#comment-tracking)
+section for details on how the state file works.
 
 With `--details`, you get remediation steps for each PR:
 
@@ -95,7 +101,35 @@ pr-owl audit --workers 1
 
 # Debug logging
 pr-owl audit --verbose
+
+# See new-comment deltas without marking them as seen
+pr-owl audit --peek
+
+# Skip the comment-tracking state file entirely (dry run)
+pr-owl audit --no-state
+
+# Print the state file location
+pr-owl state path
 ```
+
+## Comment tracking
+
+`pr-owl audit` remembers comment counts between runs in a small JSON file at
+`$XDG_STATE_HOME/pr-owl/seen.json` (defaults to `~/.local/state/pr-owl/seen.json`
+on Linux/macOS). On each run, the `New` column flags PRs that have gained
+issue comments or review activity since your previous audit. The deltas are
+auto-marked as seen on the next normal `pr-owl audit` run.
+
+If you want to glance at activity without marking it seen, use `--peek` —
+it loads the state and shows deltas but does not save. Useful when you might
+get distracted before reading the actual comments.
+
+`--no-state` skips state I/O entirely. `--status` and `--author other-user`
+also skip state save automatically (filtered runs would lose deltas for hidden
+PRs, and auditing someone else's queue would pollute your own state). The
+state file is per-authenticated-user; auditing someone else is read-only.
+
+To find the file: `pr-owl state path`. To reset tracking: delete the file.
 
 ## Status Classification
 

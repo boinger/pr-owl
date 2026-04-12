@@ -88,6 +88,7 @@ def print_table(reports: list[HealthReport]) -> None:
     # error visibility fix. See tests/test_output.py::test_long_error_title_folds_not_crops.
     table.add_column("Title", min_width=30, overflow="fold")
     table.add_column("Blockers", width=10, justify="center")
+    table.add_column("💬", width=5, justify="center")
     table.add_column("Updated", width=12)
 
     # Sort by status priority: problems first
@@ -115,6 +116,13 @@ def print_table(reports: list[HealthReport]) -> None:
         pr_ref = f"{report.pr.repo}#{report.pr.number}"
         updated = report.pr.updated_at[:10] if report.pr.updated_at else ""
 
+        comment_total = report.issue_comment_count + report.review_event_count
+        has_new = (report.new_issue_comments + report.new_review_events) > 0
+        if comment_total > 0:
+            comment_cell = f"{comment_total}*" if has_new else str(comment_total)
+        else:
+            comment_cell = ""
+
         title = report.pr.title[:50]
         if report.error:
             # Append a truncated error snippet so the user has a hint when a row
@@ -128,11 +136,14 @@ def print_table(reports: list[HealthReport]) -> None:
             pr_ref,
             title,
             blocker_count,
+            comment_cell,
             updated,
         )
 
     console.print(table)
-    console.print("[dim]⚡ = potentially fixable  👤 = waiting on others[/dim]")
+    console.print(
+        "[dim]⚡ = potentially fixable  👤 = waiting on others  💬 = comment count (* = new since last audit)[/dim]"
+    )
 
 
 def _report_to_dict(report: HealthReport) -> dict:
@@ -175,6 +186,16 @@ def print_plans(plans: list[RemediationPlan], audited_user: str | None = None) -
         console.print(f"\n[bold]{pr.repo}#{pr.number}[/bold]: {pr.title}")
         style = _STATUS_STYLE.get(plan.report.status, "")
         console.print(f"  Status: [{style}]{plan.report.status.value}[/{style}]")
+
+        new_issue = plan.report.new_issue_comments
+        new_review = plan.report.new_review_events
+        if new_issue or new_review:
+            parts: list[str] = []
+            if new_issue:
+                parts.append(f"{new_issue} comment(s)")
+            if new_review:
+                parts.append(f"{new_review} review(s)")
+            console.print(f"  [bold]💬 New activity:[/bold] {', '.join(parts)}")
 
         if plan.report.error:
             console.print(f"  [red]Error:[/red] {plan.report.error}")

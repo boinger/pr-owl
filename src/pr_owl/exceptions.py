@@ -30,3 +30,7 @@ class GhRateLimitError(PrOwlError):
 
 class PrNotFoundError(PrOwlError):
     """PR or repository no longer exists."""
+
+
+class StateError(PrOwlError):
+    """Persistent state file is corrupt, unreadable, or unwritable."""

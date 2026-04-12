@@ -91,9 +91,13 @@ def search_prs(
 
 
 # gh pr view fields
+# Note: `comments` returns issue-comment objects (PR conversation tab) and `reviews`
+# returns review event objects (approve/request-changes/comment events). Inline
+# review thread reply granularity would require gh api graphql; out of scope.
 _VIEW_FIELDS = (
     "number,title,url,isDraft,mergeStateStatus,mergeable,reviewDecision,"
-    "headRefName,baseRefName,headRepository,headRepositoryOwner,statusCheckRollup"
+    "headRefName,baseRefName,headRepository,headRepositoryOwner,statusCheckRollup,"
+    "comments,reviews"
 )
 
 

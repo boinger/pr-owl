@@ -146,6 +146,10 @@ def check_pr(pr: PRInfo) -> HealthReport:
     head_repo_name = head_repo_obj.get("name", "")
     head_repo = f"{head_repo_owner}/{head_repo_name}" if head_repo_owner and head_repo_name else ""
 
+    # gh returns null (not []) for empty arrays in some cases — `or []` survives both.
+    issue_comment_count = len(data.get("comments") or [])
+    review_event_count = len(data.get("reviews") or [])
+
     report = HealthReport(
         pr=pr,
         status=status,
@@ -157,6 +161,8 @@ def check_pr(pr: PRInfo) -> HealthReport:
         head_ref=data.get("headRefName", ""),
         base_ref=data.get("baseRefName", ""),
         head_repo=head_repo,
+        issue_comment_count=issue_comment_count,
+        review_event_count=review_event_count,
     )
 
     if mergeable == "UNKNOWN":
