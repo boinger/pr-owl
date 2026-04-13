@@ -315,8 +315,9 @@ def audit(
             last_audit = get_last_audit_at(state)
             if last_audit:
                 closed_cutoff = last_audit
-            elif viewing_other or (not state_skip_reason and state_was_empty):
-                # --author other-user has no state; first run for @me.
+            elif viewing_other or not state_skip_reason:
+                # No last_audit_at: first run, v1→v2 upgrade (state has prs
+                # but no timestamp), or --author other-user (no state loaded).
                 # Default to 7d so the closed table isn't empty on first use.
                 closed_cutoff = datetime.now(tz=timezone.utc) - timedelta(days=_DEFAULT_CLOSED_DAYS)
 
