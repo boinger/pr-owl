@@ -163,6 +163,49 @@ class HealthReport:
         return [c for c in self.checks if c.is_pending]
 
 
+class ClosedDisposition(str, Enum):
+    MERGED = "MERGED"
+    CLOSED = "CLOSED"
+
+
+@dataclass
+class ClosedPRInfo:
+    """A PR that closed since the last audit. Separate from HealthReport because
+    closed PRs don't carry blockers, CI checks, or remediation plans."""
+
+    pr: PRInfo
+    disposition: ClosedDisposition
+    days_open: int
+    review_count: int
+    closed_at: str
+
+    @classmethod
+    def from_search_result(cls, data: dict) -> ClosedPRInfo:
+        """Build from a gh search prs --state closed result."""
+        pr = PRInfo.from_search_result(data)
+        state = (data.get("state") or "").lower()
+        disposition = ClosedDisposition.MERGED if state == "merged" else ClosedDisposition.CLOSED
+
+        closed_at = data.get("closedAt") or ""
+        created_at = data.get("createdAt") or ""
+        days_open = 0
+        if closed_at and created_at:
+            try:
+                closed_dt = datetime.fromisoformat(closed_at.replace("Z", "+00:00"))
+                created_dt = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+                days_open = max(0, (closed_dt - created_dt).days)
+            except ValueError:
+                pass
+
+        return cls(
+            pr=pr,
+            disposition=disposition,
+            days_open=days_open,
+            review_count=0,  # populated by enrichment step
+            closed_at=closed_at,
+        )
+
+
 @dataclass
 class RemediationStep:
     description: str

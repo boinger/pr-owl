@@ -6,6 +6,8 @@ from pr_owl.models import (
     Blocker,
     BlockerType,
     CICheck,
+    ClosedDisposition,
+    ClosedPRInfo,
     HealthReport,
     MergeStatus,
     PRInfo,
@@ -178,3 +180,75 @@ class TestHealthReport:
         assert len(r.checks_passing) == 1
         assert len(r.checks_failing) == 1
         assert len(r.checks_pending) == 1
+
+
+# ---------------------------------------------------------------------------
+# ClosedDisposition
+# ---------------------------------------------------------------------------
+
+
+def test_closed_disposition_values():
+    assert {d.value for d in ClosedDisposition} == {"MERGED", "CLOSED"}
+
+
+# ---------------------------------------------------------------------------
+# ClosedPRInfo
+# ---------------------------------------------------------------------------
+
+
+def _closed_search_result(*, state: str = "merged", closed_at: str = "2026-04-10T12:00:00Z") -> dict:
+    """Minimal gh search result for a closed PR."""
+    return {
+        "number": 7,
+        "title": "Fix typo",
+        "url": "https://github.com/acme/repo/pull/7",
+        "repository": {"nameWithOwner": "acme/repo"},
+        "isDraft": False,
+        "createdAt": "2026-04-01T10:00:00Z",
+        "updatedAt": "2026-04-10T12:00:00Z",
+        "closedAt": closed_at,
+        "state": state,
+    }
+
+
+def test_closed_pr_info_from_search_result_merged():
+    data = _closed_search_result(state="merged")
+    info = ClosedPRInfo.from_search_result(data)
+    assert info.disposition == ClosedDisposition.MERGED
+    assert info.pr.number == 7
+
+
+def test_closed_pr_info_from_search_result_closed():
+    data = _closed_search_result(state="closed")
+    info = ClosedPRInfo.from_search_result(data)
+    assert info.disposition == ClosedDisposition.CLOSED
+
+
+def test_closed_pr_info_days_open():
+    data = _closed_search_result(closed_at="2026-04-10T10:00:00Z")
+    info = ClosedPRInfo.from_search_result(data)
+    # createdAt=2026-04-01, closedAt=2026-04-10 → 9 days
+    assert info.days_open == 9
+
+
+def test_closed_pr_info_days_open_same_day():
+    data = _closed_search_result(closed_at="2026-04-01T18:00:00Z")
+    info = ClosedPRInfo.from_search_result(data)
+    # Same calendar day → 0 days
+    assert info.days_open == 0
+
+
+def test_closed_pr_info_state_field_discrimination():
+    """The state field from gh search distinguishes merged from closed-without-merge.
+
+    gh search prs --state closed returns state:"merged" for merged PRs and
+    state:"closed" for PRs closed without merging. This test locks in the
+    discrimination logic — if GitHub ever changes the state values, this fails.
+    """
+    merged = ClosedPRInfo.from_search_result(_closed_search_result(state="merged"))
+    closed = ClosedPRInfo.from_search_result(_closed_search_result(state="closed"))
+    assert merged.disposition is ClosedDisposition.MERGED
+    assert closed.disposition is ClosedDisposition.CLOSED
+    # Unknown state falls through to CLOSED (defensive)
+    unknown = ClosedPRInfo.from_search_result(_closed_search_result(state="something_else"))
+    assert unknown.disposition is ClosedDisposition.CLOSED

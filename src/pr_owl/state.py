@@ -34,7 +34,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-CURRENT_VERSION = 1
+CURRENT_VERSION = 2
 _FILENAME = "seen.json"
 _READ_ONLY_KEY = "_read_only"  # Sentinel set by load_state on higher-version files.
 
@@ -140,6 +140,23 @@ def load_state() -> dict:
     return data
 
 
+def get_last_audit_at(state: dict) -> datetime | None:
+    """Extract the last_audit_at timestamp from loaded state.
+
+    Returns None if the field is absent (v1 state files, first run, or
+    --no-state). Callers use this to determine the since-last-run cutoff
+    for the closed-PR table.
+    """
+    raw = state.get("last_audit_at")
+    if not raw:
+        return None
+    try:
+        return datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+    except ValueError:
+        logger.warning("state: could not parse last_audit_at '%s'; treating as absent", raw)
+        return None
+
+
 def compute_delta(report: HealthReport, state: dict) -> tuple[int, int]:
     """Return (new_issue_comments, new_review_events) for this report vs stored.
 
@@ -241,7 +258,7 @@ def save_state(state: dict, reports: list[HealthReport]) -> None:
             logger.debug("state: nothing to save (no valid reports, no existing state)")
             return
 
-        new_state = {"version": CURRENT_VERSION, "prs": prs}
+        new_state = {"version": CURRENT_VERSION, "last_audit_at": now, "prs": prs}
 
         tmp_path = path.with_name(f"{path.name}.tmp")
         try:

@@ -11,6 +11,8 @@ from rich.console import Console
 from rich.table import Table
 
 from pr_owl.models import (
+    ClosedDisposition,
+    ClosedPRInfo,
     HealthReport,
     MergeStatus,
     RemediationPlan,
@@ -146,6 +148,44 @@ def print_table(reports: list[HealthReport]) -> None:
     )
 
 
+_DISPOSITION_STYLE: dict[ClosedDisposition, str] = {
+    ClosedDisposition.MERGED: "green",
+    ClosedDisposition.CLOSED: "yellow",
+}
+
+
+def print_closed_table(closed: list[ClosedPRInfo]) -> None:
+    """Print a Rich table of recently closed PRs."""
+    if not closed:
+        return
+
+    console.print("\n[bold]Recently closed[/bold]\n")
+
+    table = Table(show_header=True, header_style="bold")
+    table.add_column("Disposition", width=12)
+    table.add_column("PR", min_width=20)
+    table.add_column("Title", min_width=30, overflow="fold")
+    table.add_column("Days", width=6, justify="right")
+    table.add_column("Reviews", width=8, justify="center")
+    table.add_column("Closed", width=12)
+
+    for info in closed:
+        style = _DISPOSITION_STYLE.get(info.disposition, "")
+        pr_ref = f"{info.pr.repo}#{info.pr.number}"
+        closed_date = info.closed_at[:10] if info.closed_at else ""
+
+        table.add_row(
+            f"[{style}]{info.disposition.value}[/{style}]",
+            pr_ref,
+            info.pr.title,
+            str(info.days_open),
+            str(info.review_count) if info.review_count > 0 else "",
+            closed_date,
+        )
+
+    console.print(table)
+
+
 def _report_to_dict(report: HealthReport) -> dict:
     """Serialize a HealthReport to a JSON-friendly dict."""
     d = asdict(report)
@@ -163,9 +203,28 @@ def _report_to_dict(report: HealthReport) -> dict:
     return d
 
 
-def print_json(reports: list[HealthReport]) -> None:
-    """Print JSON array to stdout."""
-    data = [_report_to_dict(r) for r in reports]
+def _closed_to_dict(info: ClosedPRInfo) -> dict:
+    """Serialize a ClosedPRInfo to a JSON-friendly dict."""
+    return {
+        "pr": {
+            "number": info.pr.number,
+            "title": info.pr.title,
+            "repo": info.pr.repo,
+            "url": info.pr.url,
+        },
+        "disposition": info.disposition.value,
+        "days_open": info.days_open,
+        "review_count": info.review_count,
+        "closed_at": info.closed_at,
+    }
+
+
+def print_json(reports: list[HealthReport], closed: list[ClosedPRInfo] | None = None) -> None:
+    """Print JSON object to stdout with open and closed PR arrays."""
+    data = {
+        "open": [_report_to_dict(r) for r in reports],
+        "closed": [_closed_to_dict(c) for c in (closed or [])],
+    }
     sys.stdout.write(json.dumps(data, indent=2) + "\n")
 
 

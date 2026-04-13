@@ -4,13 +4,17 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
+import click
+import pytest
 from click.testing import CliRunner
 
-from pr_owl.cli import cli
+from pr_owl.cli import _parse_duration, cli
 from pr_owl.exceptions import GhCommandError, GhNotFoundError
 from pr_owl.models import (
     Blocker,
     BlockerType,
+    ClosedDisposition,
+    ClosedPRInfo,
     HealthReport,
     MergeStatus,
     PRInfo,
@@ -166,7 +170,8 @@ class TestAuditCommand:
         import json
 
         data = json.loads(result.output)
-        assert len(data) == 1
+        assert isinstance(data, dict)
+        assert len(data["open"]) == 1
 
     def test_no_prs_found(self):
         patches = _mock_preflight() + [
@@ -198,8 +203,8 @@ class TestAuditCommand:
         import json
 
         data = json.loads(result.output)
-        assert len(data) == 1
-        assert data[0]["status"] == "READY"
+        assert len(data["open"]) == 1
+        assert data["open"][0]["status"] == "READY"
 
     def test_status_filter_invalid(self):
         pr = _sample_pr()
@@ -323,9 +328,10 @@ class TestAuditCommand:
         import json
 
         data = json.loads(result.output)
-        assert isinstance(data, list)
-        assert len(data) == 1
-        assert data[0]["status"] == "READY"
+        assert isinstance(data, dict)
+        assert len(data["open"]) == 1
+        assert data["open"][0]["status"] == "READY"
+        assert "closed" in data
         # JSON must not contain the human-readable reframing notice
         assert "Viewing" not in result.output
 
@@ -398,12 +404,12 @@ class TestAuditCommand:
             patch("pr_owl.cli.time.monotonic", side_effect=[0.0, 0.5, 0.5, 3.0]),
         ]
         with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6]:
-            result = runner.invoke(cli, ["audit", "--json"])
+            result = runner.invoke(cli, ["audit", "--json", "--no-closed"])
         assert result.exit_code == 0
         import json
 
         data = json.loads(result.output)
-        statuses = {d["pr"]["number"]: d["status"] for d in data}
+        statuses = {d["pr"]["number"]: d["status"] for d in data["open"]}
         assert statuses[1] == "BLOCKED"
         assert statuses[2] == "READY"
 
@@ -420,12 +426,12 @@ class TestAuditCommand:
             patch("pr_owl.cli.time.monotonic", side_effect=[0.0, 0.5, 3.0]),
         ]
         with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6]:
-            result = runner.invoke(cli, ["audit", "--json"])
+            result = runner.invoke(cli, ["audit", "--json", "--no-closed"])
         assert result.exit_code == 0
         import json
 
         data = json.loads(result.output)
-        assert data[0]["status"] == "UNKNOWN"
+        assert data["open"][0]["status"] == "UNKNOWN"
 
     def test_unknown_no_retry_for_errors(self):
         """Exception-caused UNKNOWNs (mergeable='') are not retried."""
@@ -442,7 +448,7 @@ class TestAuditCommand:
             mock_sleep_patch,
         ]
         with patches[0], patches[1], patches[2], patches[3], patches[4] as mock_check_cm, patches[5] as mock_sleep_cm:
-            result = runner.invoke(cli, ["audit", "--json"])
+            result = runner.invoke(cli, ["audit", "--json", "--no-closed"])
         assert result.exit_code == 0
         # check_pr should be called exactly once (no retry)
         mock_check_cm.assert_called_once()
@@ -581,3 +587,237 @@ class TestStatePathSubcommand:
         result = runner.invoke(cli, ["state", "path"])
         assert result.exit_code == 0
         assert str(tmp_path / "pr-owl" / "seen.json") in result.output
+
+
+# ---------------------------------------------------------------------------
+# _parse_duration
+# ---------------------------------------------------------------------------
+
+# _parse_duration is a Click callback — build a minimal context + param.
+_DUMMY_CTX = click.Context(click.Command("test"))
+_DUMMY_PARAM = click.Option(["--closed-since"])
+
+
+def test_parse_duration_7d():
+    from datetime import datetime, timezone
+
+    result = _parse_duration(_DUMMY_CTX, _DUMMY_PARAM, "7d")
+    assert isinstance(result, datetime)
+    assert result.tzinfo is not None
+    # Should be roughly 7 days ago.
+    diff = datetime.now(tz=timezone.utc) - result
+    assert 6.9 < diff.total_seconds() / 86400 < 7.1
+
+
+def test_parse_duration_2w():
+    from datetime import datetime, timezone
+
+    result = _parse_duration(_DUMMY_CTX, _DUMMY_PARAM, "2w")
+    diff = datetime.now(tz=timezone.utc) - result
+    assert 13.9 < diff.total_seconds() / 86400 < 14.1
+
+
+def test_parse_duration_1m():
+    from datetime import datetime, timezone
+
+    result = _parse_duration(_DUMMY_CTX, _DUMMY_PARAM, "1m")
+    diff = datetime.now(tz=timezone.utc) - result
+    assert 29.9 < diff.total_seconds() / 86400 < 30.1
+
+
+def test_parse_duration_3m():
+    from datetime import datetime, timezone
+
+    result = _parse_duration(_DUMMY_CTX, _DUMMY_PARAM, "3m")
+    diff = datetime.now(tz=timezone.utc) - result
+    assert 89.9 < diff.total_seconds() / 86400 < 90.1
+
+
+def test_parse_duration_iso_date():
+    from datetime import datetime
+
+    result = _parse_duration(_DUMMY_CTX, _DUMMY_PARAM, "2026-03-01")
+    assert isinstance(result, datetime)
+    assert result.year == 2026
+    assert result.month == 3
+    assert result.day == 1
+    assert result.tzinfo is not None
+
+
+def test_parse_duration_zero_raises():
+    with pytest.raises(click.BadParameter, match="positive"):
+        _parse_duration(_DUMMY_CTX, _DUMMY_PARAM, "0d")
+
+
+def test_parse_duration_negative_raises():
+    with pytest.raises(click.BadParameter, match="positive"):
+        _parse_duration(_DUMMY_CTX, _DUMMY_PARAM, "-3d")
+
+
+def test_parse_duration_unsupported_unit_raises():
+    with pytest.raises(click.BadParameter, match="Invalid duration"):
+        _parse_duration(_DUMMY_CTX, _DUMMY_PARAM, "1y")
+
+
+def test_parse_duration_garbage_raises():
+    with pytest.raises(click.BadParameter, match="Invalid duration"):
+        _parse_duration(_DUMMY_CTX, _DUMMY_PARAM, "banana")
+
+
+def test_parse_duration_none_returns_none():
+    assert _parse_duration(_DUMMY_CTX, _DUMMY_PARAM, None) is None
+
+
+# ---------------------------------------------------------------------------
+# Closed-PR CLI integration tests
+# ---------------------------------------------------------------------------
+
+
+def _sample_closed_pr(number=7, state="merged"):
+    """Build a ClosedPRInfo for test mocking."""
+    pr = PRInfo(
+        number=number,
+        title=f"Closed PR #{number}",
+        repo="acme/repo",
+        url=f"https://github.com/acme/repo/pull/{number}",
+        is_draft=False,
+        created_at="2026-04-01T10:00:00Z",
+        updated_at="2026-04-10T12:00:00Z",
+    )
+    return ClosedPRInfo(
+        pr=pr,
+        disposition=ClosedDisposition.MERGED if state == "merged" else ClosedDisposition.CLOSED,
+        days_open=9,
+        review_count=2,
+        closed_at="2026-04-10T12:00:00Z",
+    )
+
+
+def test_no_closed_flag_suppresses_closed_table():
+    pr = _sample_pr()
+    report = HealthReport(pr=pr, status=MergeStatus.READY)
+
+    patches = _mock_preflight() + [
+        patch("pr_owl.cli.discover_prs", return_value=[pr]),
+        patch("pr_owl.cli.check_pr", return_value=report),
+        patch("pr_owl.cli.discover_closed_prs", return_value=[_sample_closed_pr()]),
+    ]
+    with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5]:
+        result = runner.invoke(cli, ["audit", "--no-closed"])
+    assert result.exit_code == 0
+    assert "Recently closed" not in result.output
+
+
+def test_closed_since_shows_closed_table():
+    pr = _sample_pr()
+    report = HealthReport(pr=pr, status=MergeStatus.READY)
+    closed = _sample_closed_pr()
+
+    patches = _mock_preflight() + [
+        patch("pr_owl.cli.discover_prs", return_value=[pr]),
+        patch("pr_owl.cli.check_pr", return_value=report),
+        patch("pr_owl.cli.discover_closed_prs", return_value=[closed]),
+    ]
+    with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5]:
+        result = runner.invoke(cli, ["audit", "--closed-since", "7d"])
+    assert result.exit_code == 0
+    assert "Recently closed" in result.output
+
+
+def test_no_closed_wins_over_closed_since():
+    pr = _sample_pr()
+    report = HealthReport(pr=pr, status=MergeStatus.READY)
+    mock_discover_closed = patch("pr_owl.cli.discover_closed_prs", return_value=[_sample_closed_pr()])
+
+    patches = _mock_preflight() + [
+        patch("pr_owl.cli.discover_prs", return_value=[pr]),
+        patch("pr_owl.cli.check_pr", return_value=report),
+        mock_discover_closed,
+    ]
+    with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5] as mock_dc:
+        result = runner.invoke(cli, ["audit", "--no-closed", "--closed-since", "7d"])
+    assert result.exit_code == 0
+    assert "Recently closed" not in result.output
+    mock_dc.assert_not_called()
+
+
+def test_json_output_includes_closed():
+    pr = _sample_pr()
+    report = HealthReport(pr=pr, status=MergeStatus.READY)
+    closed = _sample_closed_pr()
+
+    patches = _mock_preflight() + [
+        patch("pr_owl.cli.discover_prs", return_value=[pr]),
+        patch("pr_owl.cli.check_pr", return_value=report),
+        patch("pr_owl.cli.discover_closed_prs", return_value=[closed]),
+    ]
+    with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5]:
+        result = runner.invoke(cli, ["audit", "--json", "--closed-since", "7d"])
+    assert result.exit_code == 0
+    import json
+
+    data = json.loads(result.output)
+    assert "open" in data
+    assert "closed" in data
+    assert len(data["open"]) == 1
+    assert len(data["closed"]) == 1
+    assert data["closed"][0]["disposition"] == "MERGED"
+
+
+def test_json_no_open_prs_still_has_shape():
+    patches = _mock_preflight() + [
+        patch("pr_owl.cli.discover_prs", return_value=[]),
+        patch("pr_owl.cli.discover_closed_prs", return_value=[]),
+    ]
+    with patches[0], patches[1], patches[2], patches[3], patches[4]:
+        result = runner.invoke(cli, ["audit", "--json", "--closed-since", "7d"])
+    assert result.exit_code == 0
+    import json
+
+    data = json.loads(result.output)
+    assert "open" in data
+    assert "closed" in data
+    assert data["open"] == []
+    assert data["closed"] == []
+
+
+def test_zero_open_prs_closed_table_still_shown():
+    """When there are 0 open PRs but closed PRs exist, the closed table is shown."""
+    closed = _sample_closed_pr()
+
+    patches = _mock_preflight() + [
+        patch("pr_owl.cli.discover_prs", return_value=[]),
+        patch("pr_owl.cli.discover_closed_prs", return_value=[closed]),
+    ]
+    with patches[0], patches[1], patches[2], patches[3], patches[4]:
+        result = runner.invoke(cli, ["audit", "--closed-since", "7d"])
+    assert result.exit_code == 0
+    assert "Recently closed" in result.output
+
+
+def test_enrich_closed_prs_failure_is_non_fatal():
+    """When gh pr view fails for a closed PR, the PR keeps review_count=0."""
+    from pr_owl.cli import _enrich_closed_prs
+    from pr_owl.exceptions import GhCommandError
+
+    closed = _sample_closed_pr()
+    closed.review_count = 0  # reset to pre-enrichment default
+
+    with patch("pr_owl.cli.gh.view_pr", side_effect=GhCommandError(["gh"], 1, "rate limited")):
+        _enrich_closed_prs([closed], workers=1)
+
+    # review_count stays at 0 — failure is non-fatal
+    assert closed.review_count == 0
+
+
+def test_enrich_closed_prs_success_populates_review_count():
+    """When gh pr view succeeds, review_count is populated from the reviews array."""
+    from pr_owl.cli import _enrich_closed_prs
+
+    closed = _sample_closed_pr()
+    mock_data = {"reviews": [{"state": "APPROVED"}, {"state": "CHANGES_REQUESTED"}]}
+
+    with patch("pr_owl.cli.gh.view_pr", return_value=mock_data):
+        _enrich_closed_prs([closed], workers=1)
+
+    assert closed.review_count == 2

@@ -7,23 +7,25 @@ import logging
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timedelta, timezone
 
 import click
 
 from pr_owl import __version__, gh
 from pr_owl.checker import check_pr
-from pr_owl.discovery import discover_prs, filter_stale
+from pr_owl.discovery import discover_closed_prs, discover_prs, filter_stale
 from pr_owl.exceptions import GhAuthError, GhNotFoundError, PrOwlError, StateError
-from pr_owl.models import HealthReport, MergeStatus
+from pr_owl.models import ClosedPRInfo, HealthReport, MergeStatus
 from pr_owl.output import (
     console,
+    print_closed_table,
     print_json,
     print_plans,
     print_summary,
     print_table,
 )
 from pr_owl.planner import plan_remediation
-from pr_owl.state import compute_delta, load_state, save_state, state_path
+from pr_owl.state import compute_delta, get_last_audit_at, load_state, save_state, state_path
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +40,70 @@ def _normalize_author(ctx: click.Context, param: click.Parameter, value: str) ->
     if value and value != "@me" and value.startswith("@"):
         return value.lstrip("@")
     return value
+
+
+_DURATION_UNITS = {"d": 1, "w": 7, "m": 30}
+_DEFAULT_CLOSED_DAYS = 7  # fallback for --author other-user or first run
+
+
+def _parse_duration(ctx: click.Context, param: click.Parameter, value: str | None) -> datetime | None:
+    """Parse a relative duration (7d/2w/1m) or ISO date into a UTC datetime.
+
+    Returns None when the flag is omitted. Raises click.BadParameter on
+    invalid input. Used as a Click callback for --closed-since.
+    """
+    if not value:
+        return None
+
+    # Try relative duration: Nd, Nw, Nm
+    if len(value) >= 2 and value[-1] in _DURATION_UNITS:
+        try:
+            n = int(value[:-1])
+        except ValueError:
+            raise click.BadParameter(f"Invalid duration '{value}'. Use Nd, Nw, Nm (e.g. 7d, 2w, 1m) or ISO date.")
+        if n <= 0:
+            raise click.BadParameter(f"Duration must be positive, got '{value}'.")
+        days = n * _DURATION_UNITS[value[-1]]
+        return datetime.now(tz=timezone.utc) - timedelta(days=days)
+
+    # Try ISO date
+    try:
+        dt = datetime.fromisoformat(value)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
+    except ValueError:
+        raise click.BadParameter(f"Invalid duration or date '{value}'. Use Nd, Nw, Nm (e.g. 7d, 2w, 1m) or ISO date.")
+
+
+def _enrich_closed_prs(
+    closed: list[ClosedPRInfo],
+    workers: int,
+) -> None:
+    """Enrich closed PRs with review count from gh pr view. Mutates in place.
+
+    Failures are non-fatal: if a view call fails, the PR keeps its default
+    review_count=0 from the search result.
+    """
+    if not closed:
+        return
+
+    effective_workers = max(1, min(workers, len(closed)))
+
+    def _enrich_one(info: ClosedPRInfo) -> None:
+        try:
+            data = gh.view_pr(info.pr.number, info.pr.repo)
+            info.review_count = len(data.get("reviews") or [])
+        except (PrOwlError, KeyError, json.JSONDecodeError):
+            pass  # keep review_count=0
+
+    with ThreadPoolExecutor(max_workers=effective_workers) as executor:
+        futures = {executor.submit(_enrich_one, info): info for info in closed}
+        for future in as_completed(futures):
+            try:
+                future.result()
+            except (PrOwlError, KeyError, json.JSONDecodeError, AttributeError, TypeError, ValueError):
+                pass  # non-fatal; PR keeps review_count=0
 
 
 def _retry_unknown_reports(
@@ -151,6 +217,19 @@ def cli(ctx: click.Context, verbose: bool) -> None:
     help="Show comment deltas without marking them as seen. State is loaded but not saved. "
     "Useful when you want to glance at activity but might get distracted before reading it.",
 )
+@click.option(
+    "--closed-since",
+    "closed_since",
+    default=None,
+    callback=_parse_duration,
+    expose_value=True,
+    help="Show PRs closed within this window. Accepts: 7d, 2w, 1m (30 days), or ISO date.",
+)
+@click.option(
+    "--no-closed",
+    is_flag=True,
+    help="Suppress the recently-closed PR table.",
+)
 def audit(
     repo: str,
     org: str,
@@ -162,6 +241,8 @@ def audit(
     workers: int,
     no_state: bool,
     peek: bool,
+    closed_since: datetime | None,
+    no_closed: bool,
 ) -> None:
     """Audit your open PRs for mergeability."""
     # Preflight
@@ -172,49 +253,36 @@ def audit(
         console.print(f"[red]Error:[/red] {exc}")
         sys.exit(1)
 
-    # Discover
+    viewing_other = author != "@me"
+
+    # Discover user
     try:
-        viewing_other = author != "@me"
         user = author if viewing_other else gh.get_current_user()
-        prs = discover_prs(author=author, repo=repo, org=org)
     except PrOwlError as exc:
         console.print(f"[red]Error:[/red] {exc}")
         sys.exit(1)
 
-    if not prs:
-        if not json_output:
-            print_summary([], user)
-            console.print("[dim]No open PRs found.[/dim]")
-        else:
-            print_json([])
-        return
-
-    # Filter
-    if stale_days is not None:
-        prs = filter_stale(prs, stale_days)
-        if not prs:
-            if not json_output:
-                print_summary([], user)
-                console.print(f"[dim]No PRs inactive for {stale_days}+ days.[/dim]")
-            else:
-                print_json([])
-            return
-
-    # Load comment-tracking state (skip when not applicable to a personal audit).
-    # State is per-authenticated-user; we never load or save when auditing
-    # someone else's queue (would pollute the local user's seen.json with
-    # phantom deltas). We also skip when --no-state is set or --status filters
-    # the result (saving a filtered run would erase deltas for hidden PRs).
-    # --peek loads but does not save (the escape hatch for distracted readers).
+    # Load state. Split: baseline-read (for last_audit_at + comment deltas)
+    # vs comment-save (conditional). --no-state skips both. --author other
+    # skips both (state is per-authenticated-user). --status and --peek only
+    # affect the save path.
     state_skip_reason = ""
+    save_skip_reason = ""
     if no_state:
         state_skip_reason = "--no-state"
+        save_skip_reason = "--no-state"
     elif viewing_other:
         state_skip_reason = "--author other-user"
-    elif status_filter:
-        state_skip_reason = "--status filter"
+        save_skip_reason = "--author other-user"
+
+    if not save_skip_reason and status_filter:
+        save_skip_reason = "--status filter"
 
     state: dict = {}
+    # True only when we actually loaded state and it had no PR entries.
+    # Stays False when state_skip_reason prevents the load (--no-state,
+    # --author other). The first-run hints gate on both this AND
+    # not state_skip_reason, so the False default is safe.
     state_was_empty = False
     if not state_skip_reason:
         try:
@@ -225,42 +293,87 @@ def audit(
             state = {}
             state_was_empty = True
 
-    # Check health (concurrent)
+    # Discover open PRs
+    try:
+        prs = discover_prs(author=author, repo=repo, org=org)
+    except PrOwlError as exc:
+        console.print(f"[red]Error:[/red] {exc}")
+        sys.exit(1)
+
+    # Filter stale
+    if stale_days is not None and prs:
+        prs = filter_stale(prs, stale_days)
+
+    # Determine closed-PR window. --no-closed suppresses entirely.
+    # Priority: --no-closed > --closed-since > last_audit_at > 7d fallback.
+    closed: list[ClosedPRInfo] = []
+    closed_cutoff: datetime | None = None
+    if not no_closed:
+        if closed_since:
+            closed_cutoff = closed_since
+        else:
+            last_audit = get_last_audit_at(state)
+            if last_audit:
+                closed_cutoff = last_audit
+            elif viewing_other or (not state_skip_reason and state_was_empty):
+                # --author other-user has no state; first run for @me.
+                # Default to 7d so the closed table isn't empty on first use.
+                closed_cutoff = datetime.now(tz=timezone.utc) - timedelta(days=_DEFAULT_CLOSED_DAYS)
+
+    # Discover closed PRs
+    if closed_cutoff and not no_closed:
+        try:
+            closed = discover_closed_prs(
+                author=author,
+                since=closed_cutoff,
+                repo=repo,
+                org=org,
+            )
+        except PrOwlError as exc:
+            logger.warning("Could not discover closed PRs: %s", exc)
+
+    # Check health (concurrent) — only when there are open PRs
     reports: list[HealthReport] = []
-    effective_workers = max(1, min(workers, len(prs)))
     has_unknowns = False
     audit_start = time.monotonic()
 
-    with ThreadPoolExecutor(max_workers=effective_workers) as executor:
-        future_to_pr = {executor.submit(check_pr, pr): pr for pr in prs}
-        for future in as_completed(future_to_pr):
-            pr = future_to_pr[future]
-            try:
-                report = future.result()
-                reports.append(report)
-                if report.mergeable == "UNKNOWN":
-                    has_unknowns = True
-            except (PrOwlError, KeyError, json.JSONDecodeError, AttributeError, TypeError) as exc:
-                logger.warning("Failed to check %s#%d: %s", pr.repo, pr.number, exc)
-                reports.append(HealthReport(pr=pr, status=MergeStatus.UNKNOWN, error=str(exc)))
+    if prs:
+        effective_workers = max(1, min(workers, len(prs)))
 
-    # Retry PRs where GitHub returned UNKNOWN mergeable state
-    if has_unknowns:
-        _retry_unknown_reports(
-            reports,
-            workers=effective_workers,
-            audit_start=audit_start,
-            json_output=json_output,
-        )
+        with ThreadPoolExecutor(max_workers=effective_workers) as executor:
+            future_to_pr = {executor.submit(check_pr, pr): pr for pr in prs}
+            for future in as_completed(future_to_pr):
+                pr = future_to_pr[future]
+                try:
+                    report = future.result()
+                    reports.append(report)
+                    if report.mergeable == "UNKNOWN":
+                        has_unknowns = True
+                except (PrOwlError, KeyError, json.JSONDecodeError, AttributeError, TypeError) as exc:
+                    logger.warning("Failed to check %s#%d: %s", pr.repo, pr.number, exc)
+                    reports.append(HealthReport(pr=pr, status=MergeStatus.UNKNOWN, error=str(exc)))
 
-    # Annotate comment deltas. MUST run after retry (so retry-resolved counts
-    # are annotated against the loaded baseline) and BEFORE the status filter
-    # (so deltas display correctly for the filtered subset). When state was
-    # not loaded the deltas are all zero, which is the correct fallback —
-    # everything looks "first-seen."
+        # Retry PRs where GitHub returned UNKNOWN mergeable state
+        if has_unknowns:
+            _retry_unknown_reports(
+                reports,
+                workers=effective_workers,
+                audit_start=audit_start,
+                json_output=json_output,
+            )
+
+    # Annotate comment deltas (safe even when reports is empty)
     _annotate_comment_deltas(reports, state)
 
-    # Filter by status
+    # Enrich closed PRs with review count from gh pr view
+    if closed:
+        _enrich_closed_prs(closed, workers)
+
+        # Dedup: remove closed PRs that also appear in the open set (reopened PRs)
+        open_urls = {r.pr.url for r in reports}
+        closed = [c for c in closed if c.pr.url not in open_urls]
+
+    # Filter by status (open PRs only)
     if status_filter:
         try:
             target = MergeStatus(status_filter.upper())
@@ -278,9 +391,7 @@ def audit(
     # - --peek (load happened, save deliberately skipped)
     # - --author other (state is per-authenticated-user)
     # - --status filter (deltas for filtered-out PRs would be lost)
-    # The state was not loaded under the same conditions (except --peek), so
-    # the dict is either empty or the loaded state — save_state handles both.
-    if not state_skip_reason and not peek:
+    if not save_skip_reason and not peek:
         try:
             save_state(state, reports)
         except StateError as exc:
@@ -288,21 +399,29 @@ def audit(
 
     # Output
     if json_output:
-        print_json(reports)
+        print_json(reports, closed=closed)
         return
 
     print_summary(reports, user)
 
-    if show_plan:
-        print_plans(plans, audited_user=user if viewing_other else None)
-    else:
-        print_table(reports)
+    if reports:
+        if show_plan:
+            print_plans(plans, audited_user=user if viewing_other else None)
+        else:
+            print_table(reports)
+    elif not closed:
+        console.print("[dim]No open PRs found.[/dim]")
 
-    # First-run hint: tell the user the feature is working when their first
-    # audit shows no deltas because there's nothing to compare against yet.
-    # Suppressed in JSON mode and when state was skipped entirely.
-    if state_was_empty and not state_skip_reason and not peek:
-        console.print("[dim]💬 Comment tracking enabled — new activity will appear on subsequent runs.[/dim]")
+    # Closed table (always shown when there are results, regardless of open PR count)
+    if closed:
+        print_closed_table(closed)
+
+    # First-run hints
+    if not state_skip_reason and not peek and not json_output:
+        if state_was_empty:
+            console.print("[dim]💬 Comment tracking enabled — new activity will appear on subsequent runs.[/dim]")
+        if not get_last_audit_at(state) and not closed_since and not no_closed:
+            console.print("[dim]📋 Closed PR tracking enabled — resolved PRs will appear on subsequent runs.[/dim]")
 
 
 @cli.group()

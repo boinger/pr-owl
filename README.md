@@ -22,6 +22,15 @@ pr-owl — @you — 6 open PR(s)
 │ READY      │ acme/docs#55        │ Fix typo in quickstart       │          │     │ 2026-03-30 │
 └────────────┴─────────────────────┴──────────────────────────────┴──────────┴─────┴────────────┘
 ⚡ = potentially fixable  👤 = waiting on others  💬 = comment count (* = new since last audit)
+
+Recently closed
+
+┏━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━┳━━━━━━━━━┳━━━━━━━━━━━━┓
+┃ Disposition   ┃ PR                  ┃ Title                        ┃ Days ┃ Reviews ┃ Closed     ┃
+┡━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━╇━━━━━━━━━╇━━━━━━━━━━━━┩
+│ MERGED       │ acme/api#215        │ Bump Redis client to v5      │    3 │    2    │ 2026-03-31 │
+│ CLOSED       │ widgets/core#71     │ Experimental retry logic      │   14 │    1    │ 2026-03-28 │
+└──────────────┴─────────────────────┴──────────────────────────────┴──────┴─────────┴────────────┘
 ```
 
 The `💬` column shows the total comment count (issue comments + review events)
@@ -29,6 +38,10 @@ for each PR. A `*` suffix marks PRs with new activity since your last audit.
 The first time you run `pr-owl audit` it establishes the baseline; subsequent
 runs flag any changes. See the [Comment tracking](#comment-tracking)
 section for details on how the state file works.
+
+The **Recently closed** table shows PRs that closed since your last audit,
+with disposition (MERGED or CLOSED), days open, and review count. See the
+[Recently closed](#recently-closed) section for details.
 
 With `--details`, you get remediation steps for each PR:
 
@@ -105,6 +118,16 @@ pr-owl audit --verbose
 # See new-comment deltas without marking them as seen
 pr-owl audit --peek
 
+# Show PRs closed in the last 7 days
+pr-owl audit --closed-since 7d
+
+# Other time windows: 2w (14 days), 1m (30 days), or ISO date
+pr-owl audit --closed-since 2w
+pr-owl audit --closed-since 2026-04-01
+
+# Suppress the recently-closed table
+pr-owl audit --no-closed
+
 # Skip the comment-tracking state file entirely (dry run)
 pr-owl audit --no-state
 
@@ -130,6 +153,56 @@ PRs, and auditing someone else's queue would pollute your own state). The
 state file is per-authenticated-user; auditing someone else is read-only.
 
 To find the file: `pr-owl state path`. To reset tracking: delete the file.
+
+## Recently closed
+
+`pr-owl audit` automatically shows a **Recently closed** table below the
+open-PR table. It lists PRs that closed since your last audit, showing:
+
+- **Disposition**: MERGED or CLOSED (without merge)
+- **Days open**: how long the PR was open
+- **Reviews**: number of review events
+- **Closed date**
+
+By default, the closed table uses the `last_audit_at` timestamp from the
+state file. On first run (no state yet) or when using `--author`, it
+defaults to the last 7 days. Use `--closed-since` for an explicit window:
+
+```bash
+pr-owl audit --closed-since 7d    # last 7 days
+pr-owl audit --closed-since 2w    # last 14 days
+pr-owl audit --closed-since 1m    # last 30 days (m = 30 days, not calendar month)
+pr-owl audit --closed-since 2026-04-01  # since a specific date
+```
+
+Use `--no-closed` to suppress the table entirely.
+
+### JSON output
+
+**Breaking change (v0.x):** `--json` output is now a JSON object with
+`"open"` and `"closed"` keys instead of a bare array:
+
+```json
+{
+  "open": [ ... ],
+  "closed": [
+    {
+      "pr": {"number": 215, "title": "...", "repo": "acme/api", "url": "..."},
+      "disposition": "MERGED",
+      "days_open": 3,
+      "review_count": 2,
+      "closed_at": "2026-03-31T14:00:00Z"
+    }
+  ]
+}
+```
+
+If you have scripts parsing the old format, update them:
+
+```bash
+# Before: jq '.[0]' < <(pr-owl audit --json)
+# After:  jq '.open[0]' < <(pr-owl audit --json)
+```
 
 ## Status Classification
 

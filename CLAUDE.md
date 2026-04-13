@@ -50,9 +50,10 @@ make run ARGS="audit --json"  # run CLI with args
 |--------|---------|
 | `src/pr_owl/cli.py` | Click entry point, audit command, pipeline orchestration |
 | `src/pr_owl/gh.py` | gh CLI subprocess wrapper (only subprocess user) |
-| `src/pr_owl/models.py` | Dataclasses: PRInfo, HealthReport, MergeStatus, etc. |
+| `src/pr_owl/models.py` | Dataclasses: PRInfo, HealthReport, ClosedPRInfo, MergeStatus, etc. |
 | `src/pr_owl/exceptions.py` | PrOwlError hierarchy |
-| `src/pr_owl/discovery.py` | PR search + stale filtering |
+| `src/pr_owl/state.py` | Cross-run state persistence (seen.json, schema v2, file locking) |
+| `src/pr_owl/discovery.py` | PR search (open + closed) + stale filtering |
 | `src/pr_owl/checker.py` | PR health classification + blocker detection |
 | `src/pr_owl/planner.py` | Remediation plan generation |
 | `src/pr_owl/output.py` | Rich table, JSON, plan output |

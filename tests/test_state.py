@@ -13,6 +13,7 @@ from pr_owl.models import HealthReport, MergeStatus, PRInfo
 from pr_owl.state import (
     CURRENT_VERSION,
     compute_delta,
+    get_last_audit_at,
     is_valid_pr_url,
     load_state,
     save_state,
@@ -317,3 +318,92 @@ def test_compute_delta_invalid_url_returns_zero() -> None:
 def test_compute_delta_handles_missing_prs_key() -> None:
     report = _make_report(issue_comments=5)
     assert compute_delta(report, {"version": 1}) == (0, 0)
+
+
+# ---------------------------------------------------------------------------
+# save_state — version and last_audit_at
+# ---------------------------------------------------------------------------
+
+
+def test_save_state_writes_last_audit_at(isolated_state: Path) -> None:
+    save_state({}, [_make_report(issue_comments=1)])
+    loaded = load_state()
+    assert "last_audit_at" in loaded
+    # Should be a valid ISO timestamp.
+    from datetime import datetime
+
+    dt = datetime.fromisoformat(loaded["last_audit_at"].replace("Z", "+00:00"))
+    assert dt.year >= 2026
+
+
+def test_save_state_writes_version_2(isolated_state: Path) -> None:
+    save_state({}, [_make_report(issue_comments=1)])
+    loaded = load_state()
+    assert loaded["version"] == 2
+
+
+# ---------------------------------------------------------------------------
+# get_last_audit_at
+# ---------------------------------------------------------------------------
+
+
+def test_get_last_audit_at_returns_datetime_when_present() -> None:
+    from datetime import datetime, timezone
+
+    state = {"last_audit_at": "2026-04-10T12:00:00+00:00"}
+    result = get_last_audit_at(state)
+    assert isinstance(result, datetime)
+    assert result == datetime(2026, 4, 10, 12, 0, 0, tzinfo=timezone.utc)
+
+
+def test_get_last_audit_at_returns_none_when_missing() -> None:
+    assert get_last_audit_at({}) is None
+
+
+def test_get_last_audit_at_returns_none_for_invalid_value() -> None:
+    assert get_last_audit_at({"last_audit_at": "not-a-date"}) is None
+
+
+def test_v1_state_file_loads_normally(isolated_state: Path) -> None:
+    """A v1 file (no last_audit_at) loads fine; get_last_audit_at returns None."""
+    isolated_state.parent.mkdir(parents=True, exist_ok=True)
+    v1_data = {
+        "version": 1,
+        "prs": {
+            "https://github.com/acme/api/pull/1": {
+                "issue_comments": 5,
+                "review_events": 2,
+                "last_seen_at": "2026-04-01T00:00:00Z",
+            }
+        },
+    }
+    isolated_state.write_text(json.dumps(v1_data), encoding="utf-8")
+    loaded = load_state()
+    assert loaded["version"] == 1
+    assert "https://github.com/acme/api/pull/1" in loaded["prs"]
+    assert get_last_audit_at(loaded) is None
+
+
+def test_v2_state_file_roundtrips(isolated_state: Path) -> None:
+    """A v2 state file with last_audit_at loads correctly and preserves the timestamp."""
+    v2_data = {
+        "version": 2,
+        "last_audit_at": "2026-04-13T10:00:00+00:00",
+        "prs": {
+            "https://github.com/acme/api/pull/1": {
+                "issue_comments": 3,
+                "review_events": 1,
+                "last_seen_at": "2026-04-13T10:00:00Z",
+            }
+        },
+    }
+    isolated_state.parent.mkdir(parents=True, exist_ok=True)
+    isolated_state.write_text(json.dumps(v2_data), encoding="utf-8")
+    loaded = load_state()
+    assert loaded["version"] == 2
+    assert loaded["last_audit_at"] == "2026-04-13T10:00:00+00:00"
+    last = get_last_audit_at(loaded)
+    assert last is not None
+    assert last.year == 2026
+    assert last.month == 4
+    assert last.day == 13

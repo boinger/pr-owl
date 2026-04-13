@@ -11,13 +11,17 @@ from pr_owl.models import (
     Blocker,
     BlockerType,
     CICheck,
+    ClosedDisposition,
+    ClosedPRInfo,
     HealthReport,
     MergeStatus,
+    PRInfo,
     RemediationPlan,
     RemediationStep,
 )
 from pr_owl.output import (
     _report_to_dict,
+    print_closed_table,
     print_plans,
     print_table,
 )
@@ -179,8 +183,12 @@ class TestPrintJson:
         print_json(reports)
         captured = capsys.readouterr()
         data = json.loads(captured.out)
-        assert len(data) == 1
-        assert data[0]["status"] == "READY"
+        assert isinstance(data, dict)
+        assert "open" in data
+        assert "closed" in data
+        assert len(data["open"]) == 1
+        assert data["open"][0]["status"] == "READY"
+        assert data["closed"] == []
 
     def test_all_fields_serialized(self, sample_pr, capsys):
         checks = [
@@ -199,10 +207,10 @@ class TestPrintJson:
         print_json([report])
         captured = capsys.readouterr()
         data = json.loads(captured.out)
-        assert data[0]["checks"][0]["name"] == "ci/build"
-        assert data[0]["blockers"][0]["type"] == "FAILING_CHECKS"
-        assert data[0]["blockers"][0]["actionable"] is True
-        assert data[0]["has_actionable_blockers"] is True
+        assert data["open"][0]["checks"][0]["name"] == "ci/build"
+        assert data["open"][0]["blockers"][0]["type"] == "FAILING_CHECKS"
+        assert data["open"][0]["blockers"][0]["actionable"] is True
+        assert data["open"][0]["has_actionable_blockers"] is True
 
     def test_json_non_actionable_blocker(self, sample_pr, capsys):
         report = HealthReport(
@@ -215,8 +223,8 @@ class TestPrintJson:
         print_json([report])
         captured = capsys.readouterr()
         data = json.loads(captured.out)
-        assert data[0]["blockers"][0]["actionable"] is False
-        assert data[0]["has_actionable_blockers"] is False
+        assert data["open"][0]["blockers"][0]["actionable"] is False
+        assert data["open"][0]["has_actionable_blockers"] is False
 
 
 def test_report_to_dict_serialization(sample_pr):
@@ -295,10 +303,10 @@ class TestCommentDeltaColumn:
         )
         print_json([report])
         data = json.loads(capsys.readouterr().out)
-        assert data[0]["issue_comment_count"] == 5
-        assert data[0]["review_event_count"] == 2
-        assert data[0]["new_issue_comments"] == 3
-        assert data[0]["new_review_events"] == 1
+        assert data["open"][0]["issue_comment_count"] == 5
+        assert data["open"][0]["review_event_count"] == 2
+        assert data["open"][0]["new_issue_comments"] == 3
+        assert data["open"][0]["new_review_events"] == 1
 
     def test_print_plans_shows_new_activity_line(self, sample_pr):
         import re
@@ -483,3 +491,70 @@ class TestMakeConsole:
             # `console` binds to the real stderr for subsequent tests.
             sys.stderr = original_stderr
             importlib.reload(pr_owl.output)
+
+
+# ---------------------------------------------------------------------------
+# print_closed_table
+# ---------------------------------------------------------------------------
+
+
+def _make_closed_info(
+    number: int = 7,
+    disposition: ClosedDisposition = ClosedDisposition.MERGED,
+    days_open: int = 9,
+    review_count: int = 2,
+) -> ClosedPRInfo:
+    pr = PRInfo(
+        number=number,
+        title=f"Closed PR #{number}",
+        repo="acme/repo",
+        url=f"https://github.com/acme/repo/pull/{number}",
+        is_draft=False,
+        created_at="2026-04-01T10:00:00Z",
+        updated_at="2026-04-10T12:00:00Z",
+    )
+    return ClosedPRInfo(
+        pr=pr,
+        disposition=disposition,
+        days_open=days_open,
+        review_count=review_count,
+        closed_at="2026-04-10T12:00:00Z",
+    )
+
+
+def test_print_closed_table_renders_merged():
+    info = _make_closed_info(disposition=ClosedDisposition.MERGED)
+    output = _capture_console(print_closed_table, [info])
+    assert "MERGED" in output
+
+
+def test_print_closed_table_renders_closed():
+    info = _make_closed_info(disposition=ClosedDisposition.CLOSED)
+    output = _capture_console(print_closed_table, [info])
+    assert "CLOSED" in output
+
+
+def test_print_closed_table_empty_prints_nothing():
+    output = _capture_console(print_closed_table, [])
+    assert output.strip() == ""
+
+
+def test_print_json_with_closed_prs(sample_pr, capsys):
+    from pr_owl.output import print_json
+
+    reports = [HealthReport(pr=sample_pr, status=MergeStatus.READY)]
+    closed = [_make_closed_info()]
+    print_json(reports, closed=closed)
+    data = json.loads(capsys.readouterr().out)
+    assert len(data["closed"]) == 1
+    assert data["closed"][0]["disposition"] == "MERGED"
+    assert data["closed"][0]["days_open"] == 9
+
+
+def test_print_json_no_closed_has_empty_array(sample_pr, capsys):
+    from pr_owl.output import print_json
+
+    reports = [HealthReport(pr=sample_pr, status=MergeStatus.READY)]
+    print_json(reports)
+    data = json.loads(capsys.readouterr().out)
+    assert data["closed"] == []

@@ -90,6 +90,59 @@ def search_prs(
     return data
 
 
+# gh search prs --state closed fields
+# Must include updatedAt for PRInfo compatibility. `state` gives disposition
+# ("merged" or "closed") without needing mergedAt (which gh search doesn't have).
+_CLOSED_SEARCH_FIELDS = "number,title,url,closedAt,createdAt,updatedAt,repository,state,isDraft,commentsCount"
+
+
+def search_closed_prs(
+    author: str = "@me",
+    since: str = "",
+    repo: str = "",
+    org: str = "",
+    limit: int = 100,
+) -> list[dict]:
+    """Search for closed PRs authored by the given user, optionally since a date.
+
+    The ``since`` parameter is a YYYY-MM-DD date string (already validated by the
+    caller). It is passed as a ``closed:>=DATE`` search qualifier. GitHub search
+    uses day granularity, so the caller must client-side filter for precision.
+    """
+    cmd = [
+        "gh",
+        "search",
+        "prs",
+        "--author",
+        author,
+        "--state",
+        "closed",
+        "--limit",
+        str(limit),
+        "--json",
+        _CLOSED_SEARCH_FIELDS,
+    ]
+    if since:
+        cmd.append(f"closed:>={since}")
+    if repo:
+        cmd.extend(["--repo", repo])
+    if org:
+        cmd.extend(["--owner", org])
+
+    result = _run(cmd)
+    _check_errors(cmd, result)
+
+    try:
+        data = json.loads(result.stdout) if result.stdout.strip() else []
+    except json.JSONDecodeError as exc:
+        raise PrOwlError(f"Malformed JSON from 'gh search prs --state closed': {exc}") from exc
+
+    if len(data) == limit:
+        logger.debug("Closed PR search returned exactly %d results — may be truncated.", limit)
+
+    return data
+
+
 # gh pr view fields
 # Note: `comments` returns issue-comment objects (PR conversation tab) and `reviews`
 # returns review event objects (approve/request-changes/comment events). Inline

@@ -7,9 +7,9 @@ from unittest.mock import patch
 
 import pytest
 
-from pr_owl.discovery import discover_prs, filter_stale
+from pr_owl.discovery import discover_closed_prs, discover_prs, filter_stale
 from pr_owl.exceptions import PrOwlError
-from pr_owl.models import PRInfo
+from pr_owl.models import ClosedPRInfo, PRInfo
 from tests.conftest import load_fixture
 
 
@@ -106,3 +106,50 @@ class TestFilterStale:
         )
         result = filter_stale([pr], days=7)
         assert len(result) == 0
+
+
+# ---------------------------------------------------------------------------
+# discover_closed_prs
+# ---------------------------------------------------------------------------
+
+
+def _closed_search_result(number: int, closed_at: str, state: str = "merged") -> dict:
+    return {
+        "number": number,
+        "title": f"Closed #{number}",
+        "url": f"https://github.com/acme/repo/pull/{number}",
+        "repository": {"nameWithOwner": "acme/repo"},
+        "isDraft": False,
+        "createdAt": "2026-04-01T10:00:00Z",
+        "updatedAt": closed_at,
+        "closedAt": closed_at,
+        "state": state,
+    }
+
+
+def test_discover_closed_prs_returns_closed_pr_info_list():
+    results = [_closed_search_result(1, "2026-04-10T12:00:00Z")]
+    with patch("pr_owl.gh.search_closed_prs", return_value=results):
+        closed = discover_closed_prs(since=datetime(2026, 4, 5, tzinfo=timezone.utc))
+    assert len(closed) == 1
+    assert isinstance(closed[0], ClosedPRInfo)
+    assert closed[0].pr.number == 1
+
+
+def test_discover_closed_prs_filters_by_since():
+    """Client-side filter excludes PRs closed before the since datetime."""
+    results = [
+        _closed_search_result(1, "2026-04-10T12:00:00Z"),
+        _closed_search_result(2, "2026-04-02T08:00:00Z"),  # before since
+    ]
+    since = datetime(2026, 4, 5, tzinfo=timezone.utc)
+    with patch("pr_owl.gh.search_closed_prs", return_value=results):
+        closed = discover_closed_prs(since=since)
+    assert len(closed) == 1
+    assert closed[0].pr.number == 1
+
+
+def test_discover_closed_prs_empty_results():
+    with patch("pr_owl.gh.search_closed_prs", return_value=[]):
+        closed = discover_closed_prs(since=datetime(2026, 4, 1, tzinfo=timezone.utc))
+    assert closed == []
