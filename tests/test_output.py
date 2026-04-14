@@ -155,6 +155,83 @@ class TestPrintTable:
         assert "Blockers" in output
         assert "Updated" in output
 
+    def test_within_status_sorted_by_updated_desc(self):
+        """Within the same (status, actionable) bucket, newer updated_at wins.
+
+        Regression test for the nondeterministic ordering bug: as_completed()
+        in cli.py yields reports in random completion order, so the table
+        needs its own stable within-bucket tiebreaker.
+        """
+        old = PRInfo(
+            number=1,
+            title="old",
+            repo="acme/repo",
+            url="u1",
+            is_draft=False,
+            created_at="2026-01-01T00:00:00Z",
+            updated_at="2026-01-01T00:00:00Z",
+        )
+        mid = PRInfo(
+            number=2,
+            title="mid",
+            repo="acme/repo",
+            url="u2",
+            is_draft=False,
+            created_at="2026-02-01T00:00:00Z",
+            updated_at="2026-02-15T00:00:00Z",
+        )
+        new = PRInfo(
+            number=3,
+            title="new",
+            repo="acme/repo",
+            url="u3",
+            is_draft=False,
+            created_at="2026-03-01T00:00:00Z",
+            updated_at="2026-04-10T00:00:00Z",
+        )
+        reports = [
+            HealthReport(pr=old, status=MergeStatus.READY),
+            HealthReport(pr=new, status=MergeStatus.READY),
+            HealthReport(pr=mid, status=MergeStatus.READY),
+        ]
+        output = _capture_console(print_table, reports)
+        pos_new = output.index("acme/repo#3")
+        pos_mid = output.index("acme/repo#2")
+        pos_old = output.index("acme/repo#1")
+        assert pos_new < pos_mid < pos_old
+
+    def test_status_bucket_takes_precedence_over_updated(self):
+        """A newer READY PR must still sort below an older CONFLICTS PR —
+        status bucket is the primary key, updated_at only breaks bucket ties."""
+        old_conflicts = PRInfo(
+            number=10,
+            title="old conflicts",
+            repo="acme/repo",
+            url="u10",
+            is_draft=False,
+            created_at="2026-01-01T00:00:00Z",
+            updated_at="2026-01-05T00:00:00Z",
+        )
+        new_ready = PRInfo(
+            number=20,
+            title="new ready",
+            repo="acme/repo",
+            url="u20",
+            is_draft=False,
+            created_at="2026-04-01T00:00:00Z",
+            updated_at="2026-04-12T00:00:00Z",
+        )
+        reports = [
+            HealthReport(pr=new_ready, status=MergeStatus.READY),
+            HealthReport(
+                pr=old_conflicts,
+                status=MergeStatus.CONFLICTS,
+                blockers=[Blocker(type=BlockerType.HAS_CONFLICTS, description="c")],
+            ),
+        ]
+        output = _capture_console(print_table, reports)
+        assert output.index("acme/repo#10") < output.index("acme/repo#20")
+
     def test_long_error_title_folds_not_crops(self, sample_pr):
         """A long title + error snippet wraps across lines; no data is lost.
 
@@ -225,6 +302,126 @@ class TestPrintJson:
         data = json.loads(captured.out)
         assert data["open"][0]["blockers"][0]["actionable"] is False
         assert data["open"][0]["has_actionable_blockers"] is False
+
+
+class TestClosedTableOrder:
+    def _make_closed(self, number: int, repo: str, closed_at: str) -> ClosedPRInfo:
+        # PRInfo requires a valid updated_at, so keep that field independent of
+        # the closed_at value we're testing. Only closed_at drives the sort here.
+        return ClosedPRInfo(
+            pr=PRInfo(
+                number=number,
+                title=f"closed {number}",
+                repo=repo,
+                url=f"https://github.com/{repo}/pull/{number}",
+                is_draft=False,
+                created_at="2026-01-01T00:00:00Z",
+                updated_at="2026-01-01T00:00:00Z",
+            ),
+            disposition=ClosedDisposition.MERGED,
+            days_open=1,
+            review_count=0,
+            closed_at=closed_at,
+        )
+
+    def test_closed_table_sorts_by_closed_at_desc(self):
+        old = self._make_closed(1, "acme/repo", "2026-04-01T00:00:00Z")
+        new = self._make_closed(2, "acme/repo", "2026-04-10T00:00:00Z")
+        mid = self._make_closed(3, "acme/repo", "2026-04-05T00:00:00Z")
+        output = _capture_console(print_closed_table, [old, new, mid])
+        pos_new = output.index("acme/repo#2")
+        pos_mid = output.index("acme/repo#3")
+        pos_old = output.index("acme/repo#1")
+        assert pos_new < pos_mid < pos_old
+
+    def test_missing_closed_at_sinks_to_bottom(self):
+        """Entries with empty closed_at sort after entries with a real date,
+        preserving their input order among themselves."""
+        from pr_owl.output import sort_closed_prs
+
+        dated = self._make_closed(1, "acme/repo", "2026-04-10T00:00:00Z")
+        missing_a = self._make_closed(2, "acme/repo", "")
+        missing_b = self._make_closed(3, "acme/repo", "")
+        result = sort_closed_prs([missing_a, dated, missing_b])
+        assert [c.pr.number for c in result] == [1, 2, 3]
+
+    def test_malformed_closed_at_sinks_to_bottom(self):
+        """Same as missing, but for dates that fail ISO parsing. Defensive
+        branch — gh search doesn't return these in practice, but the sort
+        must not crash if it ever does."""
+        from pr_owl.output import sort_closed_prs
+
+        dated = self._make_closed(1, "acme/repo", "2026-04-10T00:00:00Z")
+        bad = self._make_closed(2, "acme/repo", "not-a-date")
+        result = sort_closed_prs([bad, dated])
+        assert [c.pr.number for c in result] == [1, 2]
+
+
+def test_print_plans_orders_like_table():
+    """--details output uses the same sort as the table and --json so all
+    three surfaces stay in lockstep."""
+    import re
+
+    old = PRInfo(
+        number=1,
+        title="old",
+        repo="acme/repo",
+        url="u1",
+        is_draft=False,
+        created_at="2026-01-01T00:00:00Z",
+        updated_at="2026-01-01T00:00:00Z",
+    )
+    new = PRInfo(
+        number=2,
+        title="new",
+        repo="acme/repo",
+        url="u2",
+        is_draft=False,
+        created_at="2026-03-01T00:00:00Z",
+        updated_at="2026-04-10T00:00:00Z",
+    )
+    plans = [
+        RemediationPlan(report=HealthReport(pr=old, status=MergeStatus.READY), steps=[], summary="ok"),
+        RemediationPlan(report=HealthReport(pr=new, status=MergeStatus.READY), steps=[], summary="ok"),
+    ]
+    # Rich splits "acme/repo#N" into separate styled spans (the number is
+    # cyan-highlighted), so the raw output contains ANSI escapes between
+    # "acme/repo#" and "2". Strip escapes before substring checks.
+    plain = re.sub(r"\x1b\[[0-9;]*m", "", _capture_console(print_plans, plans))
+    assert plain.index("acme/repo#2") < plain.index("acme/repo#1")
+
+
+def test_json_order_matches_table(capsys):
+    """--json output is ordered identically to the Rich table so consumers
+    see deterministic arrays across runs."""
+    from pr_owl.output import print_json
+
+    old = PRInfo(
+        number=1,
+        title="old",
+        repo="acme/repo",
+        url="u1",
+        is_draft=False,
+        created_at="2026-01-01T00:00:00Z",
+        updated_at="2026-01-01T00:00:00Z",
+    )
+    new = PRInfo(
+        number=2,
+        title="new",
+        repo="acme/repo",
+        url="u2",
+        is_draft=False,
+        created_at="2026-03-01T00:00:00Z",
+        updated_at="2026-04-10T00:00:00Z",
+    )
+    # Input in reverse-intended order to prove sorting happens
+    reports = [
+        HealthReport(pr=old, status=MergeStatus.READY),
+        HealthReport(pr=new, status=MergeStatus.READY),
+    ]
+    print_json(reports)
+    data = json.loads(capsys.readouterr().out)
+    assert [r["pr"]["number"] for r in data["open"]] == [2, 1]
 
 
 def test_report_to_dict_serialization(sample_pr):

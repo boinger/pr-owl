@@ -6,6 +6,7 @@ import json
 import os
 import sys
 from dataclasses import asdict
+from datetime import datetime
 
 from rich.console import Console
 from rich.table import Table
@@ -75,6 +76,64 @@ def print_summary(reports: list[HealthReport], user: str) -> None:
     console.print(f"\n[bold]pr-owl[/bold] — @{user} — {len(reports)} open PR(s)\n")
 
 
+_STATUS_ORDER: dict[MergeStatus, int] = {
+    MergeStatus.CONFLICTS: 0,
+    MergeStatus.CI_FAILING: 1,
+    MergeStatus.BLOCKED: 2,
+    MergeStatus.BEHIND: 3,
+    MergeStatus.UNKNOWN: 4,
+    MergeStatus.DRAFT: 5,
+    MergeStatus.READY: 6,
+}
+
+
+def _open_sort_key(report: HealthReport) -> tuple[int, int, float]:
+    """Sort key for open PRs. Shared between report-level and plan-level sorts
+    so all three surfaces (table, --json, --details) stay in lockstep.
+
+    Relies on ``PRInfo.__post_init__`` having parsed ``updated_at`` into
+    ``_updated_at_dt``; PRInfo raises at construction if that parse fails, so
+    every instance reaching this key function has a usable timestamp.
+    """
+    return (
+        _STATUS_ORDER.get(report.status, 99),
+        0 if report.has_actionable_blockers else 1,
+        -report.pr.updated_at_dt.timestamp(),
+    )
+
+
+def sort_open_reports(reports: list[HealthReport]) -> list[HealthReport]:
+    """Order open PRs deterministically: status bucket, actionable first, then recency.
+
+    The audit pipeline collects reports via ``as_completed``, so the input
+    order is nondeterministic. Sorting here gives stable output across runs —
+    most-recently-updated within each (status, actionable) bucket bubbles up,
+    matching the tool's action-oriented framing.
+    """
+    return sorted(reports, key=_open_sort_key)
+
+
+def sort_closed_prs(closed: list[ClosedPRInfo]) -> list[ClosedPRInfo]:
+    """Order closed PRs by most-recently-closed first.
+
+    Entries with missing or unparseable ``closed_at`` sink to the bottom in
+    stable input order (Python's ``sorted`` guarantees stability). In practice
+    ``closed_at`` is always present from ``gh search prs --state closed``, but
+    the defensive branch prevents a malformed result from crashing the sort.
+    """
+
+    def key(c: ClosedPRInfo) -> tuple[int, float]:
+        if not c.closed_at:
+            return (1, 0.0)
+        try:
+            dt = datetime.fromisoformat(c.closed_at.replace("Z", "+00:00"))
+        except ValueError:
+            return (1, 0.0)
+        return (0, -dt.timestamp())
+
+    return sorted(closed, key=key)
+
+
 def print_table(reports: list[HealthReport]) -> None:
     """Print a Rich table grouped by status."""
     if not reports:
@@ -93,20 +152,7 @@ def print_table(reports: list[HealthReport]) -> None:
     table.add_column("💬", width=5, justify="center")
     table.add_column("Updated", width=12)
 
-    # Sort by status priority: problems first
-    status_order = {
-        MergeStatus.CONFLICTS: 0,
-        MergeStatus.CI_FAILING: 1,
-        MergeStatus.BLOCKED: 2,
-        MergeStatus.BEHIND: 3,
-        MergeStatus.UNKNOWN: 4,
-        MergeStatus.DRAFT: 5,
-        MergeStatus.READY: 6,
-    }
-    sorted_reports = sorted(
-        reports,
-        key=lambda r: (status_order.get(r.status, 99), 0 if r.has_actionable_blockers else 1),
-    )
+    sorted_reports = sort_open_reports(reports)
 
     for report in sorted_reports:
         style = _STATUS_STYLE.get(report.status, "")
@@ -169,7 +215,7 @@ def print_closed_table(closed: list[ClosedPRInfo]) -> None:
     table.add_column("Reviews", width=8, justify="center")
     table.add_column("Closed", width=12)
 
-    for info in closed:
+    for info in sort_closed_prs(closed):
         style = _DISPOSITION_STYLE.get(info.disposition, "")
         pr_ref = f"{info.pr.repo}#{info.pr.number}"
         closed_date = info.closed_at[:10] if info.closed_at else ""
@@ -220,10 +266,14 @@ def _closed_to_dict(info: ClosedPRInfo) -> dict:
 
 
 def print_json(reports: list[HealthReport], closed: list[ClosedPRInfo] | None = None) -> None:
-    """Print JSON object to stdout with open and closed PR arrays."""
+    """Print JSON object to stdout with open and closed PR arrays.
+
+    Arrays are emitted in the same order as the Rich tables so ``--json``
+    consumers see deterministic output across runs.
+    """
     data = {
-        "open": [_report_to_dict(r) for r in reports],
-        "closed": [_closed_to_dict(c) for c in (closed or [])],
+        "open": [_report_to_dict(r) for r in sort_open_reports(reports)],
+        "closed": [_closed_to_dict(c) for c in sort_closed_prs(closed or [])],
     }
     sys.stdout.write(json.dumps(data, indent=2) + "\n")
 
@@ -240,7 +290,8 @@ def print_plans(plans: list[RemediationPlan], audited_user: str | None = None) -
             f"\n[dim]Viewing @{audited_user}'s PRs — the steps below describe "
             f"what @{audited_user} would need to do to unblock each PR.[/dim]"
         )
-    for plan in plans:
+    sorted_plans = sorted(plans, key=lambda p: _open_sort_key(p.report))
+    for plan in sorted_plans:
         pr = plan.report.pr
         console.print(f"\n[bold]{pr.repo}#{pr.number}[/bold]: {pr.title}")
         style = _STATUS_STYLE.get(plan.report.status, "")
