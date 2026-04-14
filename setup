@@ -14,9 +14,9 @@ echo ""
 echo "Installing pr-owl CLI..."
 if command -v pr-owl &>/dev/null; then
     echo "  pr-owl already installed, reinstalling..."
-    uv tool install --force --from "$REPO_DIR" pr-owl
+    uv tool install --force --reinstall --from "$REPO_DIR" pr-owl
 else
-    uv tool install --from "$REPO_DIR" pr-owl
+    uv tool install --reinstall --from "$REPO_DIR" pr-owl
 fi
 echo "  ✓ pr-owl CLI installed"
 
