@@ -167,6 +167,22 @@ def view_pr(number: int, repo: str) -> dict:
         raise PrOwlError(f"Malformed JSON from 'gh pr view': {exc}") from exc
 
 
+def compare_refs(repo: str, base: str, head: str) -> dict:
+    """Get commit distance between two refs via the compare API.
+
+    Returns {"behind_by": int, "ahead_by": int}.
+    For cross-repo PRs, head should be "fork_owner:branch_name".
+    """
+    cmd = ["gh", "api", f"repos/{repo}/compare/{base}...{head}", "--jq", "{behind_by: .behind_by, ahead_by: .ahead_by}"]
+    result = _run(cmd)
+    _check_errors(cmd, result)
+
+    try:
+        return json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        raise PrOwlError(f"Malformed JSON from compare API: {exc}") from exc
+
+
 def get_current_user() -> str:
     """Get the authenticated GitHub username."""
     cmd = ["gh", "api", "user", "-q", ".login"]

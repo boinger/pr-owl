@@ -93,14 +93,60 @@ class TestParseChecks:
 class TestBuildBlockers:
     def test_behind(self):
         data = load_fixture("pr_view_behind.json")
-        blockers = build_blockers(data)
+        blockers = build_blockers(data, behind_by=3)
         assert len(blockers) == 1
         assert blockers[0].type == BlockerType.BEHIND_BASE
+        assert "3 commit(s)" in blockers[0].description
+
+    def test_behind_fallback(self):
+        """mergeStateStatus=BEHIND with behind_by=0 (compare failed) falls back to old behavior."""
+        data = load_fixture("pr_view_behind.json")
+        blockers = build_blockers(data, behind_by=0)
+        assert len(blockers) == 1
+        assert blockers[0].type == BlockerType.BEHIND_BASE
+        assert "commit(s)" not in blockers[0].description
+
+    def test_behind_via_compare(self):
+        """mergeStateStatus=BLOCKED but compare says behind → BEHIND_BASE with count."""
+        data = load_fixture("pr_view_blocked_behind.json")
+        blockers = build_blockers(data, behind_by=5)
+        types = {b.type for b in blockers}
+        assert BlockerType.BEHIND_BASE in types
+        behind = next(b for b in blockers if b.type == BlockerType.BEHIND_BASE)
+        assert "5 commit(s)" in behind.description
+
+    def test_blocked_behind_compound(self):
+        """The actual motivating scenario: BLOCKED + REVIEW_REQUIRED + behind_by=5."""
+        data = load_fixture("pr_view_blocked_behind.json")
+        blockers = build_blockers(data, behind_by=5)
+        types = {b.type for b in blockers}
+        assert BlockerType.BEHIND_BASE in types
+        assert BlockerType.MISSING_REVIEWS in types
 
     def test_dirty(self):
         data = load_fixture("pr_view_dirty.json")
         blockers = build_blockers(data)
         assert any(b.type == BlockerType.HAS_CONFLICTS for b in blockers)
+
+    def test_conflicts_via_mergeable(self):
+        """mergeable=CONFLICTING with non-DIRTY mergeStateStatus → HAS_CONFLICTS."""
+        data = {
+            "mergeStateStatus": "BLOCKED",
+            "mergeable": "CONFLICTING",
+            "reviewDecision": "",
+            "isDraft": False,
+            "statusCheckRollup": [],
+        }
+        blockers = build_blockers(data)
+        assert any(b.type == BlockerType.HAS_CONFLICTS for b in blockers)
+
+    def test_no_double_conflict(self):
+        """DIRTY + CONFLICTING produces exactly one HAS_CONFLICTS blocker."""
+        data = load_fixture("pr_view_dirty.json")
+        data["mergeable"] = "CONFLICTING"
+        blockers = build_blockers(data)
+        conflict_blockers = [b for b in blockers if b.type == BlockerType.HAS_CONFLICTS]
+        assert len(conflict_blockers) == 1
 
     def test_review_required(self):
         data = load_fixture("pr_view_blocked.json")
@@ -169,11 +215,13 @@ class TestBuildBlockers:
 class TestCheckPr:
     def test_normal_flow(self, sample_pr):
         data = load_fixture("pr_view_clean.json")
-        with patch("pr_owl.gh.view_pr", return_value=data):
+        with patch("pr_owl.gh.view_pr", return_value=data), patch("pr_owl.gh.compare_refs") as mock_compare:
             report = check_pr(sample_pr)
         assert report.status == MergeStatus.READY
         assert report.is_ready
         assert len(report.checks) == 1
+        # CLEAN → compare_refs should not be called
+        mock_compare.assert_not_called()
 
     def test_deleted_fork(self, sample_pr):
         with patch("pr_owl.gh.view_pr", side_effect=GhCommandError(["gh"], 1, "Could not resolve")):
@@ -183,33 +231,84 @@ class TestCheckPr:
 
     def test_unknown_mergeable(self, sample_pr):
         data = load_fixture("pr_view_unknown_mergeable.json")
-        with patch("pr_owl.gh.view_pr", return_value=data):
+        compare_result = {"behind_by": 0, "ahead_by": 1}
+        with (
+            patch("pr_owl.gh.view_pr", return_value=data),
+            patch("pr_owl.gh.compare_refs", return_value=compare_result),
+        ):
             report = check_pr(sample_pr)
         assert "UNKNOWN" in report.error
 
     def test_handles_null_head_repo(self, sample_pr):
         """Deleted fork: headRepository and headRepositoryOwner are JSON null.
 
-        Previously this produced an AttributeError from `None.get(...)`.
-        Now the report renders normally with an empty head_repo string.
+        compare_refs is skipped (nothing to compare against), behind_by stays 0.
         """
         data = {
             "number": 42,
             "title": "t",
             "url": "",
             "isDraft": False,
-            "mergeStateStatus": "CLEAN",
+            "mergeStateStatus": "BLOCKED",
             "mergeable": "MERGEABLE",
-            "reviewDecision": "APPROVED",
+            "reviewDecision": "REVIEW_REQUIRED",
             "headRefName": "feature",
             "baseRefName": "main",
             "headRepository": None,
             "headRepositoryOwner": None,
             "statusCheckRollup": [],
         }
-        with patch("pr_owl.gh.view_pr", return_value=data):
+        with patch("pr_owl.gh.view_pr", return_value=data), patch("pr_owl.gh.compare_refs") as mock_compare:
             report = check_pr(sample_pr)
         assert report.head_repo == ""
-        assert report.status == MergeStatus.READY
-        assert report.mergeable == "MERGEABLE"
-        assert not report.error
+        assert report.behind_by == 0
+        mock_compare.assert_not_called()
+
+    def test_compare_success(self, sample_pr):
+        """view + compare both succeed → behind_by populated on report."""
+        data = load_fixture("pr_view_blocked_behind.json")
+        with (
+            patch("pr_owl.gh.view_pr", return_value=data),
+            patch("pr_owl.gh.compare_refs", return_value={"behind_by": 7, "ahead_by": 2}),
+        ):
+            report = check_pr(sample_pr)
+        assert report.behind_by == 7
+        assert any(b.type == BlockerType.BEHIND_BASE for b in report.blockers)
+
+    def test_compare_failure_fallback(self, sample_pr):
+        """view ok + compare raises → behind_by=0, report still valid."""
+        data = load_fixture("pr_view_blocked_behind.json")
+        with (
+            patch("pr_owl.gh.view_pr", return_value=data),
+            patch("pr_owl.gh.compare_refs", side_effect=GhCommandError(["gh"], 1, "fail")),
+        ):
+            report = check_pr(sample_pr)
+        assert report.behind_by == 0
+        assert report.status == MergeStatus.BLOCKED
+        # No BEHIND_BASE blocker since mergeStateStatus is BLOCKED, not BEHIND
+        assert not any(b.type == BlockerType.BEHIND_BASE for b in report.blockers)
+
+    def test_fork_head_spec(self, sample_pr):
+        """Cross-repo PR → compare called with fork_owner:branch format."""
+        data = load_fixture("pr_view_blocked_behind.json")
+        data["headRepositoryOwner"] = {"login": "contributor"}
+        data["headRepository"] = {"name": "repo"}
+        with (
+            patch("pr_owl.gh.view_pr", return_value=data),
+            patch("pr_owl.gh.compare_refs", return_value={"behind_by": 2, "ahead_by": 1}) as mock_compare,
+        ):
+            report = check_pr(sample_pr)
+        mock_compare.assert_called_once_with("acme/repo", "main", "contributor:feature/widget")
+        assert report.behind_by == 2
+
+    def test_clean_skips_compare(self, sample_pr):
+        """mergeStateStatus=CLEAN → compare_refs never called."""
+        data = load_fixture("pr_view_clean.json")
+        data["headRepository"] = {"name": "repo"}
+        data["headRepositoryOwner"] = {"login": "acme"}
+        with (
+            patch("pr_owl.gh.view_pr", return_value=data),
+            patch("pr_owl.gh.compare_refs") as mock_compare,
+        ):
+            check_pr(sample_pr)
+        mock_compare.assert_not_called()

@@ -130,6 +130,7 @@ class HealthReport:
     base_ref: str = ""
     head_repo: str = ""
     error: str = ""
+    behind_by: int = 0  # commits behind base; 0 = up to date or unknown
     # Comment activity counters. issue_comment_count and review_event_count are
     # populated by check_pr from the gh response. new_issue_comments and
     # new_review_events are populated by _annotate_comment_deltas in cli.py

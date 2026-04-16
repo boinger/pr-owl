@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 
 from pr_owl import gh
-from pr_owl.exceptions import GhCommandError, PrNotFoundError
+from pr_owl.exceptions import GhCommandError, PrNotFoundError, PrOwlError
 from pr_owl.models import (
     Blocker,
     BlockerType,
@@ -35,14 +35,32 @@ def classify_status(merge_state_status: str, is_draft: bool) -> MergeStatus:
     return _STATUS_MAP.get(merge_state_status, MergeStatus.UNKNOWN)
 
 
-def build_blockers(data: dict) -> list[Blocker]:
-    """Inspect all PR fields independently to build the blockers list."""
+def build_blockers(data: dict, behind_by: int = 0) -> list[Blocker]:
+    """Inspect all PR fields independently to build the blockers list.
+
+    ``behind_by`` comes from the REST compare API and provides an independent
+    signal for whether the branch is behind base — ``mergeStateStatus`` masks
+    this when other conditions (BLOCKED, UNSTABLE) are also present.
+    """
     blockers: list[Blocker] = []
 
     merge_state = data.get("mergeStateStatus", "")
-    if merge_state == "BEHIND":
+
+    # Behind-base: prefer the compare API count; fall back to mergeStateStatus
+    # when the compare call failed or was skipped.
+    if behind_by > 0:
+        blockers.append(
+            Blocker(
+                type=BlockerType.BEHIND_BASE,
+                description=f"Branch is {behind_by} commit(s) behind base branch",
+            )
+        )
+    elif merge_state == "BEHIND":
         blockers.append(Blocker(type=BlockerType.BEHIND_BASE, description="Branch is behind base branch"))
-    if merge_state == "DIRTY":
+
+    # Conflicts: mergeStateStatus == DIRTY is the primary signal, but it can be
+    # masked by BLOCKED. The ``mergeable`` field is an independent indicator.
+    if merge_state == "DIRTY" or data.get("mergeable") == "CONFLICTING":
         blockers.append(Blocker(type=BlockerType.HAS_CONFLICTS, description="Branch has merge conflicts"))
 
     review = data.get("reviewDecision", "")
@@ -134,8 +152,6 @@ def check_pr(pr: PRInfo) -> HealthReport:
     mergeable = data.get("mergeable", "")
 
     status = classify_status(merge_state, is_draft)
-    blockers = build_blockers(data)
-    checks = _parse_checks(data.get("statusCheckRollup", []))
 
     # `gh pr view` may return JSON null for these fields (deleted fork, etc).
     # `data.get("headRepository", {})` returns None (not the default) when the
@@ -145,6 +161,26 @@ def check_pr(pr: PRInfo) -> HealthReport:
     head_repo_owner = head_owner_obj.get("login", "")
     head_repo_name = head_repo_obj.get("name", "")
     head_repo = f"{head_repo_owner}/{head_repo_name}" if head_repo_owner and head_repo_name else ""
+
+    base_ref = data.get("baseRefName", "")
+    head_ref = data.get("headRefName", "")
+
+    # Independent behind-base detection via the REST compare API.
+    # mergeStateStatus masks BEHIND when other conditions (BLOCKED, UNSTABLE)
+    # are present. Skip the call for CLEAN (guaranteed up-to-date) and when the
+    # head repo is gone (deleted fork — nothing to compare against).
+    behind_by = 0
+    if merge_state != "CLEAN" and head_repo:
+        repo_owner = pr.repo.split("/")[0]
+        head_spec = f"{head_repo_owner}:{head_ref}" if head_repo_owner != repo_owner else head_ref
+        try:
+            compare_data = gh.compare_refs(pr.repo, base_ref, head_spec)
+            behind_by = compare_data.get("behind_by", 0)
+        except (GhCommandError, PrNotFoundError, PrOwlError) as exc:
+            logger.debug("Compare failed for %s#%d: %s", pr.repo, pr.number, exc)
+
+    blockers = build_blockers(data, behind_by=behind_by)
+    checks = _parse_checks(data.get("statusCheckRollup", []))
 
     # gh returns null (not []) for empty arrays in some cases — `or []` survives both.
     issue_comment_count = len(data.get("comments") or [])
@@ -158,9 +194,10 @@ def check_pr(pr: PRInfo) -> HealthReport:
         merge_state_status=merge_state,
         review_decision=data.get("reviewDecision", ""),
         checks=checks,
-        head_ref=data.get("headRefName", ""),
-        base_ref=data.get("baseRefName", ""),
+        head_ref=head_ref,
+        base_ref=base_ref,
         head_repo=head_repo,
+        behind_by=behind_by,
         issue_comment_count=issue_comment_count,
         review_event_count=review_event_count,
     )

@@ -17,6 +17,7 @@ from pr_owl.exceptions import (
 )
 from pr_owl.gh import (
     check_auth,
+    compare_refs,
     ensure_gh,
     get_current_user,
     search_prs,
@@ -161,6 +162,53 @@ class TestViewPr:
         mock_subprocess.return_value = MagicMock(returncode=0, stdout="not json", stderr="")
         with pytest.raises(PrOwlError, match="Malformed JSON"):
             view_pr(42, "acme/repo")
+
+
+class TestCompareRefs:
+    def test_success(self, mock_subprocess):
+        mock_subprocess.return_value = MagicMock(
+            returncode=0,
+            stdout='{"behind_by": 3, "ahead_by": 5}',
+            stderr="",
+        )
+        result = compare_refs("acme/repo", "main", "feature-branch")
+        assert result["behind_by"] == 3
+        assert result["ahead_by"] == 5
+
+    def test_cross_repo_head(self, mock_subprocess):
+        mock_subprocess.return_value = MagicMock(
+            returncode=0,
+            stdout='{"behind_by": 0, "ahead_by": 1}',
+            stderr="",
+        )
+        compare_refs("acme/repo", "main", "contributor:feature-branch")
+        args = mock_subprocess.call_args[0][0]
+        assert "repos/acme/repo/compare/main...contributor:feature-branch" in args
+
+    def test_not_found(self, mock_subprocess):
+        mock_subprocess.return_value = MagicMock(returncode=1, stdout="", stderr="Not Found")
+        with pytest.raises(PrNotFoundError):
+            compare_refs("acme/repo", "main", "deleted-branch")
+
+    def test_rate_limit(self, mock_subprocess):
+        mock_subprocess.return_value = MagicMock(returncode=1, stdout="", stderr="API rate limit exceeded")
+        with pytest.raises(GhRateLimitError):
+            compare_refs("acme/repo", "main", "feature")
+
+    def test_generic_error(self, mock_subprocess):
+        mock_subprocess.return_value = MagicMock(returncode=1, stdout="", stderr="something broke")
+        with pytest.raises(GhCommandError):
+            compare_refs("acme/repo", "main", "feature")
+
+    def test_malformed_json(self, mock_subprocess):
+        mock_subprocess.return_value = MagicMock(returncode=0, stdout="not json", stderr="")
+        with pytest.raises(PrOwlError, match="Malformed JSON"):
+            compare_refs("acme/repo", "main", "feature")
+
+    def test_timeout(self, mock_subprocess):
+        mock_subprocess.side_effect = subprocess.TimeoutExpired(cmd=["gh", "api"], timeout=30)
+        with pytest.raises(GhCommandError):
+            compare_refs("acme/repo", "main", "feature")
 
 
 class TestGetCurrentUser:
