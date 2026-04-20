@@ -29,6 +29,8 @@ uv tool install --from git+https://github.com/boinger/pr-owl.git pr-owl
 - **"details"** → **Details mode**
 - Ambiguous → **Audit mode**
 
+The modes are mutually exclusive. Once you've picked a mode, follow ONLY that mode's invocation pattern. Never run a `--json` capture in Audit Mode, and never run a separate `pr-owl audit` table render in Fix Mode. Mixing patterns causes a state-update race that hides the `*` indicator for new comments (see `cli.py:395-397` save guard and `output.py:168` asterisk condition).
+
 ---
 
 ## Fix Mode
@@ -50,6 +52,12 @@ Then use the Read tool to read `/tmp/pr-owl-audit.json`. The JSON is an object w
 > Heads up: PR1 (URL), PR2 (URL) have new activity since your last audit. You may want to read those before I start fixing.
 
 This is non-blocking — proceed with the fix workflow after surfacing it. The point is to make sure new feedback is visible BEFORE the user gets distracted by the rebase/conflict-resolution dance.
+
+**Do NOT additionally run `pr-owl audit 2>&1` to render the table for the user at this point.** That second invocation loads the just-saved state file (the `--json` call above commits state via `save_state()` at `cli.py:397`) and computes zero comment deltas, hiding the `*` indicator for genuinely new activity. The Step 3 verify call (after fixes are applied) is the only non-JSON `pr-owl audit` invocation in Fix Mode.
+
+**Render an open-PR summary as a markdown table from the JSON you just loaded.** Match the same columns and row order that the CLI's rich table uses — see `print_table` in `src/pr_owl/output.py` for the source of truth. The JSON's `open` array is already sorted by the CLI via `sort_open_reports`; preserve that order, do not re-sort. For the comment count column, render `X*` (with the asterisk) when `new_issue_comments + new_review_events > 0`; otherwise render `X` for any non-zero `issue_comment_count + review_event_count`, blank when zero. This is the assistant-rendered equivalent of the rich table the CLI would have produced, and it correctly shows the `*` because the JSON contains the deltas computed against pre-save state.
+
+If `data["closed"]` is non-empty, also render a brief closed-PR summary table using the same column-source-of-truth principle (see `print_closed_table` in `output.py`).
 
 Then present a brief summary of what you found and what you're about to do.
 
@@ -172,6 +180,8 @@ Show the table directly:
 ```bash
 pr-owl audit 2>&1
 ```
+
+This is the ONLY pr-owl invocation in Audit Mode. Do NOT capture JSON; do NOT make a follow-up call. The single `pr-owl audit 2>&1` shows the rich table with the `*` indicator correctly because state hasn't been mutated yet when the table renders.
 
 Adapt: `--stale-days 14`, `--repo owner/repo`, `--status CONFLICTS`
 
