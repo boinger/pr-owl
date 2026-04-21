@@ -82,6 +82,10 @@ class PRInfo:
     # constructor signature; default=None is a type lie but correct at
     # runtime because __post_init__ always sets it (or raises).
     _updated_at_dt: datetime | None = field(default=None, init=False, repr=False, compare=False)
+    # Lenient parse: display-only, not a sort key. A bad value degrades one
+    # cell, not the whole audit. Contrast with _updated_at_dt, which is strict
+    # because _open_sort_key requires it.
+    _created_at_dt: datetime | None = field(default=None, init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         if not isinstance(self.updated_at, str) or not self.updated_at:
@@ -90,6 +94,13 @@ class PRInfo:
             self._updated_at_dt = datetime.fromisoformat(self.updated_at.replace("Z", "+00:00"))
         except ValueError as exc:
             raise PrOwlError(f"Malformed PRInfo.updated_at: {self.updated_at!r}") from exc
+        try:
+            dt = datetime.fromisoformat(self.created_at.replace("Z", "+00:00"))
+            # Python 3.11+ fromisoformat accepts naive strings without raising.
+            # Reject them here so age_days() can't TypeError at render time.
+            self._created_at_dt = dt if dt.tzinfo is not None else None
+        except (ValueError, TypeError, AttributeError):
+            self._created_at_dt = None
 
     @classmethod
     def from_search_result(cls, data: dict) -> PRInfo:
@@ -115,6 +126,17 @@ class PRInfo:
         # _updated_at_dt is always populated by __post_init__ (or it raised).
         assert self._updated_at_dt is not None
         return self._updated_at_dt
+
+    def age_days(self, now: datetime) -> int | None:
+        """Days since PR was created, or None if created_at is unparseable.
+
+        Clamps negative values (clock skew) to 0, matching
+        ClosedPRInfo.days_open at models.py:198. `now` must be tz-aware;
+        behavior with naive `now` is undefined.
+        """
+        if self._created_at_dt is None:
+            return None
+        return max(0, (now - self._created_at_dt).days)
 
 
 @dataclass

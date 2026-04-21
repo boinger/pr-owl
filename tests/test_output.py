@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from io import StringIO
 
 from rich.console import Console
@@ -138,8 +139,9 @@ class TestPrintTable:
 
         The bug this test guards against: when Rich's default 80-col non-TTY
         width hit the table, the Blockers and Updated columns got cropped out
-        of the rightmost edge entirely. 120 is the new floor, and all five
-        column headers must be visible.
+        of the rightmost edge entirely. 120 is the new floor, and all column
+        headers must be visible — including the rightmost Open column, which
+        has minimal headroom under the floor.
         """
         reports = [
             HealthReport(
@@ -154,6 +156,41 @@ class TestPrintTable:
         assert "Title" in output
         assert "Blockers" in output
         assert "Updated" in output
+        assert "Open" in output
+
+    def test_renders_open_days_cell(self, sample_pr, monkeypatch):
+        """Age-in-days cell renders for a PR with a known created_at.
+
+        sample_pr has created_at=2026-01-15 and we inject now=2026-04-20,
+        so delta.days == 95. The column is right-justified width=6, so the
+        rendered value appears as "95" somewhere in the row.
+        """
+        import pr_owl.output as output_mod
+
+        fixed_now = datetime(2026, 4, 20, 10, 0, 0, tzinfo=timezone.utc)
+        monkeypatch.setattr(output_mod, "_now_utc", lambda: fixed_now)
+        report = HealthReport(pr=sample_pr, status=MergeStatus.READY)
+        output = _capture_console(print_table, [report])
+        assert "95" in output
+
+    def test_renders_empty_open_cell_for_unparseable_created_at(self, monkeypatch):
+        """PR with malformed created_at renders an empty Open cell, not "None"."""
+        import pr_owl.output as output_mod
+
+        fixed_now = datetime(2026, 4, 20, 10, 0, 0, tzinfo=timezone.utc)
+        monkeypatch.setattr(output_mod, "_now_utc", lambda: fixed_now)
+        pr = PRInfo(
+            number=1,
+            title="t",
+            repo="acme/repo",
+            url="u",
+            is_draft=False,
+            created_at="not-a-date",
+            updated_at="2026-04-19T10:00:00Z",
+        )
+        report = HealthReport(pr=pr, status=MergeStatus.READY)
+        output = _capture_console(print_table, [report])
+        assert "None" not in output
 
     def test_within_status_sorted_by_updated_desc(self):
         """Within the same (status, actionable) bucket, newer updated_at wins.
@@ -435,6 +472,27 @@ def test_report_to_dict_serialization(sample_pr):
     assert d["blockers"][0]["type"] == "BEHIND_BASE"
     assert d["blockers"][0]["actionable"] is True
     assert d["has_actionable_blockers"] is True
+
+
+def test_now_utc_returns_utc_aware_datetime():
+    """Sanity: the _now_utc helper returns tz-aware UTC, which age_days relies on."""
+    from pr_owl.output import _now_utc
+
+    now = _now_utc()
+    assert now.tzinfo is timezone.utc
+
+
+def test_json_excludes_both_private_datetime_caches(sample_pr):
+    """Regression: asdict(report) includes init=False fields, so the cached
+    _updated_at_dt and _created_at_dt datetimes would leak into --json output
+    and make json.dumps raise TypeError. _report_to_dict must strip both.
+    """
+    report = HealthReport(pr=sample_pr, status=MergeStatus.READY)
+    d = _report_to_dict(report)
+    assert "_updated_at_dt" not in d["pr"]
+    assert "_created_at_dt" not in d["pr"]
+    # And the JSON serializes cleanly end-to-end.
+    json.dumps(d)  # raises TypeError if a datetime slipped through
 
 
 class TestCommentDeltaColumn:

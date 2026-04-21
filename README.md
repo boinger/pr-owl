@@ -11,16 +11,16 @@ $ pr-owl audit
 
 pr-owl — @you — 6 open PR(s)
 
-┏━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━┳━━━━━┳━━━━━━━━━━━━┓
-┃ Status     ┃ PR                  ┃ Title                        ┃ Blockers ┃  💬 ┃ Updated    ┃
-┡━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━╇━━━━━╇━━━━━━━━━━━━┩
-│ CONFLICTS  │ acme/api#218        │ Add rate limiting middleware │   ⚡ 2   │ 8*  │ 2026-03-15 │
-│ CI_FAILING │ widgets/core#74     │ Fix timezone handling        │   ⚡ 1   │  3  │ 2026-03-28 │
-│ BEHIND     │ acme/api#220        │ Update OpenAPI spec for v3   │   ⚡ 1   │ 2*  │ 2026-03-29 │
-│ BLOCKED    │ bigcorp/svc#1042    │ Add gRPC health check        │   👤 1   │  1  │ 2026-03-20 │
-│ DRAFT      │ widgets/core#80     │ Refactor event pipeline      │   ⚡ 1   │     │ 2026-03-30 │
-│ READY      │ acme/docs#55        │ Fix typo in quickstart       │          │     │ 2026-03-30 │
-└────────────┴─────────────────────┴──────────────────────────────┴──────────┴─────┴────────────┘
+┏━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━┳━━━━━┳━━━━━━━━━━━━┳━━━━━━┓
+┃ Status     ┃ PR                  ┃ Title                        ┃ Blockers ┃  💬 ┃ Updated    ┃ Open ┃
+┡━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━╇━━━━━╇━━━━━━━━━━━━╇━━━━━━┩
+│ CONFLICTS  │ acme/api#218        │ Add rate limiting middleware │   ⚡ 2   │ 8*  │ 2026-03-15 │   92 │
+│ CI_FAILING │ widgets/core#74     │ Fix timezone handling        │   ⚡ 1   │  3  │ 2026-03-28 │   47 │
+│ BEHIND     │ acme/api#220        │ Update OpenAPI spec for v3   │   ⚡ 1   │ 2*  │ 2026-03-29 │   14 │
+│ BLOCKED    │ bigcorp/svc#1042    │ Add gRPC health check        │   👤 1   │  1  │ 2026-03-20 │  183 │
+│ DRAFT      │ widgets/core#80     │ Refactor event pipeline      │   ⚡ 1   │     │ 2026-03-30 │    5 │
+│ READY      │ acme/docs#55        │ Fix typo in quickstart       │          │     │ 2026-03-30 │    2 │
+└────────────┴─────────────────────┴──────────────────────────────┴──────────┴─────┴────────────┴──────┘
 ⚡ = potentially fixable  👤 = waiting on others  💬 = comment count (* = new since last audit)
 
 Recently closed
@@ -38,6 +38,10 @@ for each PR. A `*` suffix marks PRs with new activity since your last audit.
 The first time you run `pr-owl audit` it establishes the baseline; subsequent
 runs flag any changes. See the [Comment tracking](#comment-tracking)
 section for details on how the state file works.
+
+The `Open` column shows days since the PR was created. Combined with `Updated`
+(last activity), it surfaces PRs that look alive but have been open for
+months — the rebase-traffic-without-merge pattern that pr-owl exists to catch.
 
 The **Recently closed** table shows PRs that closed since your last audit,
 with disposition (MERGED or CLOSED), days open, and review count. See the
@@ -203,6 +207,10 @@ If you have scripts parsing the old format, update them:
 # Before: jq '.[0]' < <(pr-owl audit --json)
 # After:  jq '.open[0]' < <(pr-owl audit --json)
 ```
+
+The `Open` column is a display-only derived value; `--json` emits the raw
+`created_at` / `updated_at` ISO timestamps so consumers compute age against
+their own clock.
 
 ## Status Classification
 

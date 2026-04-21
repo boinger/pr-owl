@@ -6,7 +6,7 @@ import json
 import os
 import sys
 from dataclasses import asdict
-from datetime import datetime
+from datetime import datetime, timezone
 
 from rich.console import Console
 from rich.table import Table
@@ -69,6 +69,13 @@ def _make_console() -> Console:
 
 
 console = _make_console()
+
+
+def _now_utc() -> datetime:
+    """Current time, tz-aware UTC. Isolated for test injection — tests
+    monkeypatch this symbol rather than patching ``datetime`` module-scope
+    (which would collaterally affect ``sort_closed_prs`` and other callers)."""
+    return datetime.now(tz=timezone.utc)
 
 
 def print_summary(reports: list[HealthReport], user: str) -> None:
@@ -151,8 +158,10 @@ def print_table(reports: list[HealthReport]) -> None:
     table.add_column("Blockers", width=10, justify="center")
     table.add_column("💬", width=5, justify="center")
     table.add_column("Updated", width=12)
+    table.add_column("Open", width=6, justify="right")
 
     sorted_reports = sort_open_reports(reports)
+    now = _now_utc()
 
     for report in sorted_reports:
         style = _STATUS_STYLE.get(report.status, "")
@@ -179,6 +188,9 @@ def print_table(reports: list[HealthReport]) -> None:
             err_snippet = report.error[:60].replace("\n", " ")
             title = f"{title} [dim red]· {err_snippet}[/dim red]"
 
+        age = report.pr.age_days(now)
+        age_cell = "" if age is None else str(age)
+
         table.add_row(
             f"[{style}]{report.status.value}[/{style}]",
             pr_ref,
@@ -186,6 +198,7 @@ def print_table(reports: list[HealthReport]) -> None:
             blocker_count,
             comment_cell,
             updated,
+            age_cell,
         )
 
     console.print(table)
@@ -242,10 +255,12 @@ def _report_to_dict(report: HealthReport) -> dict:
     ]
     d["has_actionable_blockers"] = report.has_actionable_blockers
     d["checks"] = [asdict(c) for c in report.checks]
-    # PRInfo caches a parsed datetime in _updated_at_dt that json.dumps can't
-    # serialize. Strip it — callers needing the timestamp should use updated_at.
+    # PRInfo caches parsed datetimes in _updated_at_dt / _created_at_dt that
+    # json.dumps can't serialize. Strip them — callers needing timestamps
+    # should use updated_at / created_at directly.
     if isinstance(d.get("pr"), dict):
         d["pr"].pop("_updated_at_dt", None)
+        d["pr"].pop("_created_at_dt", None)
     return d
 
 

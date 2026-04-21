@@ -1,5 +1,7 @@
 """Tests for pr_owl.models."""
 
+from datetime import datetime, timezone
+
 import pytest
 
 from pr_owl.models import (
@@ -120,6 +122,50 @@ class TestPRInfo:
         assert dt.year == 2026
         assert dt.month == 3
         assert dt.day == 20
+
+
+def _make_pr(created_at: str, updated_at: str = "2026-04-20T10:00:00Z") -> PRInfo:
+    return PRInfo(
+        number=1,
+        title="test",
+        repo="acme/repo",
+        url="https://github.com/acme/repo/pull/1",
+        is_draft=False,
+        created_at=created_at,
+        updated_at=updated_at,
+    )
+
+
+class TestPRInfoAgeDays:
+    def test_age_days_happy_path(self):
+        pr = _make_pr(created_at="2026-03-14T10:00:00Z")
+        now = datetime(2026, 4, 20, 10, 0, 0, tzinfo=timezone.utc)
+        assert pr.age_days(now) == 37
+
+    def test_age_days_empty_created_at(self):
+        pr = _make_pr(created_at="")
+        now = datetime(2026, 4, 20, 10, 0, 0, tzinfo=timezone.utc)
+        assert pr.age_days(now) is None
+
+    def test_age_days_malformed_created_at(self):
+        pr = _make_pr(created_at="not-a-date")
+        now = datetime(2026, 4, 20, 10, 0, 0, tzinfo=timezone.utc)
+        assert pr.age_days(now) is None
+
+    def test_age_days_future_created_at_clamps_to_zero(self):
+        # Concrete clearly-negative delta (delta.days = -5) so the clamp fires.
+        pr = _make_pr(created_at="2026-04-25T10:00:00Z")
+        now = datetime(2026, 4, 20, 10, 0, 0, tzinfo=timezone.utc)
+        assert pr.age_days(now) == 0
+
+    def test_age_days_naive_created_at_returns_none(self):
+        # fromisoformat accepts naive strings on Python 3.11+. The explicit
+        # tzinfo guard in __post_init__ rejects them so age_days can't
+        # TypeError at render time.
+        pr = _make_pr(created_at="2026-04-01T10:00:00")
+        now = datetime(2026, 4, 20, 10, 0, 0, tzinfo=timezone.utc)
+        assert pr._created_at_dt is None
+        assert pr.age_days(now) is None
 
 
 class TestHealthReport:
