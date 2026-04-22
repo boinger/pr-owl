@@ -162,7 +162,7 @@ class TestPrintTable:
         """Age-in-days cell renders for a PR with a known created_at.
 
         sample_pr has created_at=2026-01-15 and we inject now=2026-04-20,
-        so delta.days == 95. The column is right-justified width=6, so the
+        so delta.days == 95. The column is right-justified width=4, so the
         rendered value appears as "95" somewhere in the row.
         """
         import pr_owl.output as output_mod

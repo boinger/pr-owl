@@ -30,6 +30,12 @@ _STATUS_STYLE: dict[MergeStatus, str] = {
 }
 
 _NON_TTY_WIDTH_FLOOR = 120
+# Cap table width on ultra-wide terminals. Rationale:
+# 1. Emoji (⚡, 💬) take 2 visual cells but Rich counts them as 1 — at full
+#    terminal width, this overflows and wraps rows onto multiple lines.
+# 2. Titles expanding to 90+ chars for ~35-char content is wasted space.
+# 160 chars = 80% of a 200-col terminal; above that, leave margin.
+_TABLE_WIDTH_CAP = 160
 
 
 def _make_console() -> Console:
@@ -147,18 +153,25 @@ def print_table(reports: list[HealthReport]) -> None:
         console.print("[dim]No PRs found.[/dim]")
         return
 
-    table = Table(show_header=True, header_style="bold")
-    table.add_column("Status", width=12)
-    table.add_column("PR", min_width=20)
+    # Fill terminal width up to _TABLE_WIDTH_CAP. Elastic columns (PR, Title
+    # via ratio=) claim extra width; fixed-width columns stay put.
+    table = Table(show_header=True, header_style="bold", width=min(console.width, _TABLE_WIDTH_CAP))
+    # Column widths chosen to fit longest expected content exactly (no padding):
+    # Status: "CI_FAILING" = 10 chars. Blockers: "⚡ 99" visual-width ≈ 5 chars,
+    # header "Blockers" = 8 chars (header is the binding constraint). Updated:
+    # YYYY-MM-DD = 10 chars. Open: 4-digit days = 4 chars, header "Open" = 4.
+    table.add_column("Status", width=10)
+    table.add_column("PR", min_width=20, ratio=1)
     # Title uses overflow="fold" so long titles (including the error snippet
     # appended when report.error is set) wrap across multiple lines instead of
     # being silently cropped with "…". Removing this will regress DX-1 — the
     # error visibility fix. See tests/test_output.py::test_long_error_title_folds_not_crops.
-    table.add_column("Title", min_width=30, overflow="fold")
-    table.add_column("Blockers", width=10, justify="center")
+    # ratio=2 gives Title twice the extra-width share of PR — titles are longer.
+    table.add_column("Title", min_width=30, overflow="fold", ratio=2)
+    table.add_column("Blockers", width=8, justify="center")
     table.add_column("💬", width=5, justify="center")
-    table.add_column("Updated", width=12)
-    table.add_column("Open", width=6, justify="right")
+    table.add_column("Updated", width=10)
+    table.add_column("Open", width=4, justify="right")
 
     sorted_reports = sort_open_reports(reports)
     now = _now_utc()
@@ -220,10 +233,10 @@ def print_closed_table(closed: list[ClosedPRInfo]) -> None:
 
     console.print("\n[bold]Recently closed[/bold]\n")
 
-    table = Table(show_header=True, header_style="bold")
+    table = Table(show_header=True, header_style="bold", width=min(console.width, _TABLE_WIDTH_CAP))
     table.add_column("Disposition", width=12)
-    table.add_column("PR", min_width=20)
-    table.add_column("Title", min_width=30, overflow="fold")
+    table.add_column("PR", min_width=20, ratio=1)
+    table.add_column("Title", min_width=30, overflow="fold", ratio=2)
     table.add_column("Days", width=6, justify="right")
     table.add_column("Reviews", width=8, justify="center")
     table.add_column("Closed", width=12)
