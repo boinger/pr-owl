@@ -66,9 +66,21 @@ Then present a brief summary of what you found and what you're about to do.
 Process in this order: BEHIND first, then CONFLICTS/CI_FAILING, then report BLOCKED.
 
 **BEHIND** (remote, no clone needed):
+
+First, detect the branch's existing sync style. If a local clone is available:
 ```bash
-gh pr update-branch <number> -R <repo> --rebase
+git -C <clone> log --merges upstream/<base>..origin/<head_ref> --oneline | head -5
 ```
+- If output contains `Merge branch '<base>' into ...` commits → the branch has been kept in sync via **merge**. Match that style — preserves all existing commit SHAs, no force-push, no CI re-approval reset:
+  ```bash
+  gh pr update-branch <number> -R <repo>
+  ```
+- If output is empty → the branch is **linear**. Rebase mode is appropriate (rewrites SHAs and triggers a force-push, but matches the existing style):
+  ```bash
+  gh pr update-branch <number> -R <repo> --rebase
+  ```
+
+If no local clone exists to inspect, default to **merge mode** (no `--rebase` flag). Merge is the safe default: zero SHA churn, no force-push event in the PR timeline, no CI re-approval cascade. Only opt into `--rebase` when style detection confirmed linear OR the user explicitly asked for linearization.
 
 **CONFLICTS or CI_FAILING** (needs local clone):
 1. Find the clone (see Clone Discovery below)
