@@ -34,9 +34,10 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-CURRENT_VERSION = 2
+CURRENT_VERSION = 3
 _FILENAME = "seen.json"
 _READ_ONLY_KEY = "_read_only"  # Sentinel set by load_state on higher-version files.
+_SCHEMA_RESET_KEY = "_schema_reset"  # Sentinel set when loaded version differs from CURRENT_VERSION.
 
 
 def state_path() -> Path:
@@ -136,6 +137,19 @@ def load_state() -> dict:
         )
         return {_READ_ONLY_KEY: True}
 
+    if isinstance(version, int) and version < CURRENT_VERSION:
+        # Schema changed; old per-PR fields don't map cleanly to the new ones,
+        # so we drop the v<CURRENT baseline entirely and rebuild on next save.
+        # First run after upgrade will show no comment deltas; subsequent runs
+        # behave normally. Surface as a warning so the user understands why
+        # `*` markers vanished for one cycle (default log level is WARNING).
+        logger.warning(
+            "State schema upgraded (v%d→v%d); comment deltas reset for this run.",
+            version,
+            CURRENT_VERSION,
+        )
+        return {_SCHEMA_RESET_KEY: True}
+
     logger.debug("state: loaded %d PRs from %s", len(data.get("prs") or {}), path)
     return data
 
@@ -157,26 +171,24 @@ def get_last_audit_at(state: dict) -> datetime | None:
         return None
 
 
-def compute_delta(report: HealthReport, state: dict) -> tuple[int, int]:
-    """Return (new_issue_comments, new_review_events) for this report vs stored.
+def compute_delta(report: HealthReport, state: dict) -> int:
+    """Return new_comments for this report vs the stored baseline.
 
-    First-seen URLs return (0, 0): the PR is new to us, not "all comments are
-    new." This matches user intuition — the first time pr-owl sees a PR,
-    nothing is flagged; deltas appear on subsequent runs.
+    First-seen URLs return 0: the PR is new to us, not "all comments are new."
+    This matches user intuition — the first time pr-owl sees a PR, nothing is
+    flagged; deltas appear on subsequent runs.
 
     Negative deltas (a comment was deleted) clamp to 0. We never display
     negative numbers; the next save will update the stored count to the new
     smaller value silently.
     """
     if not is_valid_pr_url(report.pr.url):
-        return (0, 0)
+        return 0
     prs = state.get("prs") or {}
     prior = prs.get(report.pr.url)
     if not prior:
-        return (0, 0)
-    new_issue = max(0, report.issue_comment_count - int(prior.get("issue_comments", 0)))
-    new_review = max(0, report.review_event_count - int(prior.get("review_events", 0)))
-    return (new_issue, new_review)
+        return 0
+    return max(0, report.comment_count - int(prior.get("comment_count", 0)))
 
 
 def save_state(state: dict, reports: list[HealthReport]) -> None:
@@ -231,6 +243,19 @@ def save_state(state: dict, reports: list[HealthReport]) -> None:
         # optimize this away by using the `state` argument directly.
         current = _read_inside_lock(path)
 
+        # Race guard: if a newer pr-owl wrote a higher-version file between
+        # our initial load and now, _read_inside_lock returns the read-only
+        # sentinel. Refuse to overwrite (would downgrade the file).
+        if current.get(_READ_ONLY_KEY):
+            logger.warning(
+                "state save skipped: file at %s was upgraded by a newer pr-owl while this audit ran",
+                path,
+            )
+            return
+
+        # If the on-disk file is from an older schema version, _read_inside_lock
+        # returns {} so prs starts empty here — old-schema entries are dropped
+        # rather than merged into a v3 file. Prevents mixed-schema files.
         prs = current.get("prs") or {}
         if not isinstance(prs, dict):
             prs = {}
@@ -245,8 +270,7 @@ def save_state(state: dict, reports: list[HealthReport]) -> None:
             if not is_valid_pr_url(report.pr.url):
                 continue
             prs[report.pr.url] = {
-                "issue_comments": report.issue_comment_count,
-                "review_events": report.review_event_count,
+                "comment_count": report.comment_count,
                 "last_seen_at": now,
             }
             updates += 1
@@ -290,6 +314,12 @@ def _read_inside_lock(path: Path) -> dict:
     became corrupt between our initial load and now, that's an exotic
     failure mode; we treat it as empty for the merge and let the next
     invocation handle the recovery.
+
+    Version handling: returns {} for any version != CURRENT_VERSION. This
+    prevents two failure modes: (1) merging old-schema PR entries into a new
+    file (mixed-schema files), and (2) downgrading a newer file when an old
+    binary acquires the lock. The fcntl lock serializes writes but not
+    version semantics; this guard supplies the missing version isolation.
     """
     if not path.exists():
         return {}
@@ -303,5 +333,20 @@ def _read_inside_lock(path: Path) -> dict:
         logger.warning("state file at %s became unreadable while holding lock; merging onto empty", path)
         return {}
     if not isinstance(data, dict):
+        return {}
+    version = data.get("version", 0)
+    if not isinstance(version, int):
+        return {}
+    if version > CURRENT_VERSION:
+        # A newer pr-owl wrote this file between our initial load and now.
+        # Refuse to overwrite — the lock serializes writes but not version
+        # semantics, so downgrades would otherwise slip through. save_state
+        # checks for this sentinel and bails before writing.
+        return {_READ_ONLY_KEY: True}
+    if version < CURRENT_VERSION:
+        # Schema upgrade: drop the old baseline and let save_state write our
+        # version with prs={} for entries we don't have updates for. This is
+        # the same handling load_state does, but inside the lock for the
+        # re-read race.
         return {}
     return data

@@ -182,9 +182,10 @@ def check_pr(pr: PRInfo) -> HealthReport:
     blockers = build_blockers(data, behind_by=behind_by)
     checks = _parse_checks(data.get("statusCheckRollup", []))
 
-    # gh returns null (not []) for empty arrays in some cases — `or []` survives both.
-    issue_comment_count = len(data.get("comments") or [])
-    review_event_count = len(data.get("reviews") or [])
+    # totalCommentsCount is GitHub's canonical PR-level comment counter (the
+    # number shown in /pulls and notifications). gh.view_pr always populates
+    # this key as an int (coerced from null/missing/wrong-type at the boundary).
+    comment_count = data["totalCommentsCount"]
 
     report = HealthReport(
         pr=pr,
@@ -198,8 +199,7 @@ def check_pr(pr: PRInfo) -> HealthReport:
         base_ref=base_ref,
         head_repo=head_repo,
         behind_by=behind_by,
-        issue_comment_count=issue_comment_count,
-        review_event_count=review_event_count,
+        comment_count=comment_count,
     )
 
     if mergeable == "UNKNOWN":

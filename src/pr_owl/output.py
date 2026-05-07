@@ -186,8 +186,8 @@ def print_table(reports: list[HealthReport]) -> None:
         pr_ref = f"{report.pr.repo}#{report.pr.number}"
         updated = report.pr.updated_at[:10] if report.pr.updated_at else ""
 
-        comment_total = report.issue_comment_count + report.review_event_count
-        has_new = (report.new_issue_comments + report.new_review_events) > 0
+        comment_total = report.comment_count
+        has_new = report.new_comments > 0
         if comment_total > 0:
             comment_cell = f"{comment_total}*" if has_new else str(comment_total)
         else:
@@ -325,15 +325,8 @@ def print_plans(plans: list[RemediationPlan], audited_user: str | None = None) -
         style = _STATUS_STYLE.get(plan.report.status, "")
         console.print(f"  Status: [{style}]{plan.report.status.value}[/{style}]")
 
-        new_issue = plan.report.new_issue_comments
-        new_review = plan.report.new_review_events
-        if new_issue or new_review:
-            parts: list[str] = []
-            if new_issue:
-                parts.append(f"{new_issue} comment(s)")
-            if new_review:
-                parts.append(f"{new_review} review(s)")
-            console.print(f"  [bold]💬 New activity:[/bold] {', '.join(parts)}")
+        if plan.report.new_comments:
+            console.print(f"  [bold]💬 New activity:[/bold] {plan.report.new_comments} new comment(s)")
 
         if plan.report.error:
             console.print(f"  [red]Error:[/red] {plan.report.error}")

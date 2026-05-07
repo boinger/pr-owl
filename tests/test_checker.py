@@ -229,6 +229,26 @@ class TestCheckPr:
         assert report.status == MergeStatus.UNKNOWN
         assert report.error
 
+    # T9: new graphql-specific error types from view_pr must also produce UNKNOWN
+    # (audit doesn't crash). The pre-rewrite test_deleted_fork covered gh-pr-view's
+    # error path; these guard the new graphql error paths introduced in the rewrite.
+
+    def test_view_pr_raises_pr_not_found_propagates_to_unknown(self, sample_pr):
+        """GraphQL returns null pullRequest → PrNotFoundError → UNKNOWN report."""
+        from pr_owl.exceptions import PrNotFoundError
+
+        with patch("pr_owl.gh.view_pr", side_effect=PrNotFoundError("PR not accessible")):
+            report = check_pr(sample_pr)
+        assert report.status == MergeStatus.UNKNOWN
+        assert report.error
+
+    def test_view_pr_raises_graphql_errors_envelope_propagates_to_unknown(self, sample_pr):
+        """GraphQL returns 200 with errors array → GhCommandError → UNKNOWN report."""
+        with patch("pr_owl.gh.view_pr", side_effect=GhCommandError(["gh", "api", "graphql"], 0, "GraphQL errors: ...")):
+            report = check_pr(sample_pr)
+        assert report.status == MergeStatus.UNKNOWN
+        assert report.error
+
     def test_unknown_mergeable(self, sample_pr):
         data = load_fixture("pr_view_unknown_mergeable.json")
         compare_result = {"behind_by": 0, "ahead_by": 1}
@@ -257,6 +277,7 @@ class TestCheckPr:
             "headRepository": None,
             "headRepositoryOwner": None,
             "statusCheckRollup": [],
+            "totalCommentsCount": 0,
         }
         with patch("pr_owl.gh.view_pr", return_value=data), patch("pr_owl.gh.compare_refs") as mock_compare:
             report = check_pr(sample_pr)

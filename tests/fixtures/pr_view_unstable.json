@@ -25,5 +25,6 @@
       "workflowName": "CI",
       "detailsUrl": "https://github.com/acme/repo/actions/runs/456"
     }
-  ]
+  ],
+  "totalCommentsCount": 0
 }

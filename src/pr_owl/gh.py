@@ -143,28 +143,163 @@ def search_closed_prs(
     return data
 
 
-# gh pr view fields
-# Note: `comments` returns issue-comment objects (PR conversation tab) and `reviews`
-# returns review event objects (approve/request-changes/comment events). Inline
-# review thread reply granularity would require gh api graphql; out of scope.
-_VIEW_FIELDS = (
-    "number,title,url,isDraft,mergeStateStatus,mergeable,reviewDecision,"
-    "headRefName,baseRefName,headRepository,headRepositoryOwner,statusCheckRollup,"
-    "comments,reviews"
-)
+# GraphQL query for view_pr. Single round-trip replaces `gh pr view --json` so
+# we can fetch totalCommentsCount (the canonical count GitHub uses in /pulls)
+# alongside everything else. Paginated edges use `first: 100`, which is more
+# than any real PR will hit — if a PR exceeds this we'll see truncation in
+# tests and can paginate properly later.
+_VIEW_QUERY = """
+query($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      number
+      title
+      url
+      isDraft
+      mergeable
+      mergeStateStatus
+      reviewDecision
+      headRefName
+      baseRefName
+      headRepository { name }
+      headRepositoryOwner { login }
+      totalCommentsCount
+      reviews(first: 100) {
+        totalCount
+        nodes { state author { login } body submittedAt }
+      }
+      commits(last: 1) {
+        nodes {
+          commit {
+            statusCheckRollup {
+              state
+              contexts(first: 100) {
+                nodes {
+                  __typename
+                  ... on CheckRun { name conclusion status detailsUrl }
+                  ... on StatusContext { context state targetUrl }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+"""
+
+
+def _split_repo(repo: str) -> tuple[str, str]:
+    """Split 'owner/name' into ('owner', 'name'). Raises on malformed input."""
+    parts = repo.split("/", 1)
+    if len(parts) != 2 or not parts[0] or not parts[1]:
+        raise PrOwlError(f"Malformed repo identifier '{repo}'; expected 'owner/name'.")
+    return parts[0], parts[1]
+
+
+def _coerce_int(value: object, default: int = 0) -> int:
+    """Coerce a GraphQL scalar to int, defaulting on null/wrong-type."""
+    if isinstance(value, bool):  # bool is a subclass of int — exclude.
+        return default
+    if isinstance(value, int):
+        return value
+    return default
 
 
 def view_pr(number: int, repo: str) -> dict:
-    """Get detailed PR info via gh pr view."""
-    cmd = ["gh", "pr", "view", str(number), "-R", repo, "--json", _VIEW_FIELDS]
+    """Get detailed PR info via `gh api graphql`.
+
+    Returns a dict in the same shape `gh pr view --json` previously returned,
+    so callers (checker.py, cli._enrich_closed_prs) work unchanged. Notably
+    `reviews` is a list[dict] (not totalCount), preserving `len()` compat.
+
+    Failure modes:
+    - Subprocess error or non-zero exit → `_check_errors` raises GhCommandError/etc.
+    - GraphQL `errors` envelope (200 OK with errors array) → GhCommandError.
+    - Missing `data.repository.pullRequest` → PrNotFoundError.
+    - Null/missing scalars → coerced to defaults (0 / "" / []).
+    - Other shape problems → PrOwlError.
+    """
+    owner, name = _split_repo(repo)
+    cmd = [
+        "gh",
+        "api",
+        "graphql",
+        # `-f` forces string type — required for owner/name because the GraphQL
+        # query declares them as String!, and a numeric repo name (e.g. user/42)
+        # under `-F` would auto-detect as Int and trigger a GraphQL type error.
+        "-f",
+        f"owner={owner}",
+        "-f",
+        f"name={name}",
+        # `-F` typed flag — needed for number because GraphQL declares Int!.
+        "-F",
+        f"number={number}",
+        "-f",
+        f"query={_VIEW_QUERY}",
+    ]
 
     result = _run(cmd)
     _check_errors(cmd, result)
 
     try:
-        return json.loads(result.stdout)
+        envelope = json.loads(result.stdout)
     except json.JSONDecodeError as exc:
-        raise PrOwlError(f"Malformed JSON from 'gh pr view': {exc}") from exc
+        raise PrOwlError(f"Malformed JSON from gh api graphql: {exc}") from exc
+
+    if not isinstance(envelope, dict):
+        raise PrOwlError(f"Unexpected GraphQL envelope shape: {type(envelope).__name__}")
+
+    if envelope.get("errors"):
+        raise GhCommandError(cmd, 0, f"GraphQL errors: {envelope['errors']}")
+
+    try:
+        pr = envelope["data"]["repository"]["pullRequest"]
+    except (KeyError, TypeError) as exc:
+        raise PrOwlError(f"Unexpected GraphQL response shape: {exc}") from exc
+
+    if pr is None:
+        raise PrNotFoundError(f"PR {repo}#{number} not found or not accessible.")
+
+    head_repo = pr.get("headRepository") or {}
+    head_owner = pr.get("headRepositoryOwner") or {}
+
+    reviews_block = pr.get("reviews") or {}
+    review_nodes = reviews_block.get("nodes") if isinstance(reviews_block, dict) else None
+    reviews_list: list[dict] = list(review_nodes) if isinstance(review_nodes, list) else []
+
+    # statusCheckRollup is nested under commits.nodes[0].commit. We flatten
+    # contexts.nodes into the top-level "statusCheckRollup" key as a list of
+    # dicts to match what `gh pr view --json statusCheckRollup` produced.
+    rollup_contexts: list[dict] = []
+    commits_block = pr.get("commits") or {}
+    commit_nodes = commits_block.get("nodes") if isinstance(commits_block, dict) else None
+    if isinstance(commit_nodes, list) and commit_nodes:
+        first_commit = commit_nodes[0] or {}
+        commit_obj = first_commit.get("commit") or {}
+        rollup = commit_obj.get("statusCheckRollup") or {}
+        contexts_block = rollup.get("contexts") or {}
+        ctx_nodes = contexts_block.get("nodes") if isinstance(contexts_block, dict) else None
+        if isinstance(ctx_nodes, list):
+            rollup_contexts = [n for n in ctx_nodes if isinstance(n, dict)]
+
+    return {
+        "number": _coerce_int(pr.get("number")),
+        "title": pr.get("title") or "",
+        "url": pr.get("url") or "",
+        "isDraft": bool(pr.get("isDraft")),
+        "mergeable": pr.get("mergeable") or "",
+        "mergeStateStatus": pr.get("mergeStateStatus") or "",
+        "reviewDecision": pr.get("reviewDecision") or "",
+        "headRefName": pr.get("headRefName") or "",
+        "baseRefName": pr.get("baseRefName") or "",
+        "headRepository": {"name": head_repo.get("name") or ""},
+        "headRepositoryOwner": {"login": head_owner.get("login") or ""},
+        "totalCommentsCount": _coerce_int(pr.get("totalCommentsCount")),
+        "reviews": reviews_list,
+        "statusCheckRollup": rollup_contexts,
+    }
 
 
 def compare_refs(repo: str, base: str, head: str) -> dict:

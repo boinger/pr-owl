@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import subprocess
 from unittest.mock import MagicMock, patch
 
@@ -138,15 +139,44 @@ class TestSearchPrs:
             search_prs()
 
 
+def _graphql_envelope(pr_dict: dict | None) -> str:
+    """Helper: build a GraphQL response envelope around a pullRequest dict."""
+    return json.dumps({"data": {"repository": {"pullRequest": pr_dict}}})
+
+
+def _full_pr(**overrides) -> dict:
+    """Helper: full GraphQL pullRequest dict shape with sensible defaults."""
+    base = {
+        "number": 42,
+        "title": "Test PR",
+        "url": "https://github.com/acme/repo/pull/42",
+        "isDraft": False,
+        "mergeable": "MERGEABLE",
+        "mergeStateStatus": "CLEAN",
+        "reviewDecision": "APPROVED",
+        "headRefName": "feature",
+        "baseRefName": "main",
+        "headRepository": {"name": "repo"},
+        "headRepositoryOwner": {"login": "acme"},
+        "totalCommentsCount": 0,
+        "reviews": {"totalCount": 0, "nodes": []},
+        "commits": {"nodes": [{"commit": {"statusCheckRollup": {"state": "SUCCESS", "contexts": {"nodes": []}}}}]},
+    }
+    base.update(overrides)
+    return base
+
+
 class TestViewPr:
     def test_basic(self, mock_subprocess):
         mock_subprocess.return_value = MagicMock(
             returncode=0,
-            stdout='{"number": 42, "mergeStateStatus": "CLEAN"}',
+            stdout=_graphql_envelope(_full_pr()),
             stderr="",
         )
         result = view_pr(42, "acme/repo")
         assert result["mergeStateStatus"] == "CLEAN"
+        assert result["totalCommentsCount"] == 0
+        assert result["reviews"] == []  # nodes list, not totalCount
 
     def test_not_found(self, mock_subprocess):
         mock_subprocess.return_value = MagicMock(
@@ -158,10 +188,78 @@ class TestViewPr:
             view_pr(42, "deleted/repo")
 
     def test_translates_json_decode_error(self, mock_subprocess):
-        """Malformed JSON from `gh pr view` becomes PrOwlError, not JSONDecodeError."""
+        """Malformed JSON from `gh api graphql` becomes PrOwlError, not JSONDecodeError."""
         mock_subprocess.return_value = MagicMock(returncode=0, stdout="not json", stderr="")
         with pytest.raises(PrOwlError, match="Malformed JSON"):
             view_pr(42, "acme/repo")
+
+    # T5: GraphQL errors envelope (HTTP 200 with errors array) → GhCommandError
+    def test_graphql_errors_envelope(self, mock_subprocess):
+        from pr_owl.exceptions import GhCommandError
+
+        mock_subprocess.return_value = MagicMock(
+            returncode=0,
+            stdout=json.dumps({"errors": [{"message": "Field 'totalCommentsCount' doesn't exist"}]}),
+            stderr="",
+        )
+        with pytest.raises(GhCommandError, match="GraphQL errors"):
+            view_pr(42, "acme/repo")
+
+    # T6: missing data.repository.pullRequest (null) → PrNotFoundError
+    def test_null_pull_request(self, mock_subprocess):
+        mock_subprocess.return_value = MagicMock(
+            returncode=0,
+            stdout=_graphql_envelope(None),
+            stderr="",
+        )
+        with pytest.raises(PrNotFoundError):
+            view_pr(42, "acme/repo")
+
+    # T7: totalCommentsCount: null → coerces to 0
+    def test_null_total_comments_count(self, mock_subprocess):
+        mock_subprocess.return_value = MagicMock(
+            returncode=0,
+            stdout=_graphql_envelope(_full_pr(totalCommentsCount=None)),
+            stderr="",
+        )
+        result = view_pr(42, "acme/repo")
+        assert result["totalCommentsCount"] == 0
+
+    # T8: totalCommentsCount with wrong type → coerces to 0 (does not raise)
+    def test_wrong_type_total_comments_count(self, mock_subprocess):
+        mock_subprocess.return_value = MagicMock(
+            returncode=0,
+            stdout=_graphql_envelope(_full_pr(totalCommentsCount="twelve")),
+            stderr="",
+        )
+        result = view_pr(42, "acme/repo")
+        assert result["totalCommentsCount"] == 0
+
+    def test_split_repo_rejects_malformed(self, mock_subprocess):
+        with pytest.raises(PrOwlError, match="Malformed repo"):
+            view_pr(42, "no-slash")
+        with pytest.raises(PrOwlError, match="Malformed repo"):
+            view_pr(42, "/missing-owner")
+        with pytest.raises(PrOwlError, match="Malformed repo"):
+            view_pr(42, "missing-name/")
+
+    def test_reviews_returned_as_list_not_count(self, mock_subprocess):
+        """T10b: the reviews key MUST be list[dict] so cli._enrich_closed_prs can len() it."""
+        mock_subprocess.return_value = MagicMock(
+            returncode=0,
+            stdout=_graphql_envelope(
+                _full_pr(
+                    reviews={
+                        "totalCount": 3,
+                        "nodes": [{"state": "APPROVED"}, {"state": "COMMENTED"}, {"state": "CHANGES_REQUESTED"}],
+                    }
+                )
+            ),
+            stderr="",
+        )
+        result = view_pr(42, "acme/repo")
+        assert isinstance(result["reviews"], list)
+        assert len(result["reviews"]) == 3
 
 
 class TestCompareRefs:

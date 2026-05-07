@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import click
 import pytest
@@ -474,15 +474,14 @@ class TestStateFlags:
     def test_default_audit_creates_state_file(self, tmp_path, monkeypatch):
         state_file = self._isolate(monkeypatch, tmp_path)
         pr = _sample_pr(1)
-        report = HealthReport(pr=pr, status=MergeStatus.READY, issue_comment_count=3, review_event_count=1)
+        report = HealthReport(pr=pr, status=MergeStatus.READY, comment_count=4)
         result = self._run_audit(pr, report)
         assert result.exit_code == 0
         assert state_file.exists()
         import json as _json
 
         data = _json.loads(state_file.read_text())
-        assert data["prs"][pr.url]["issue_comments"] == 3
-        assert data["prs"][pr.url]["review_events"] == 1
+        assert data["prs"][pr.url]["comment_count"] == 4
 
     def test_first_run_emits_hint(self, tmp_path, monkeypatch):
         self._isolate(monkeypatch, tmp_path)
@@ -494,7 +493,7 @@ class TestStateFlags:
     def test_second_run_no_hint(self, tmp_path, monkeypatch):
         self._isolate(monkeypatch, tmp_path)
         pr = _sample_pr(1)
-        report = HealthReport(pr=pr, status=MergeStatus.READY, issue_comment_count=2)
+        report = HealthReport(pr=pr, status=MergeStatus.READY, comment_count=2)
         # First run primes state.
         self._run_audit(pr, report)
         # Second run should not show the first-run hint.
@@ -504,7 +503,7 @@ class TestStateFlags:
     def test_no_state_skips_state_file(self, tmp_path, monkeypatch):
         state_file = self._isolate(monkeypatch, tmp_path)
         pr = _sample_pr(1)
-        report = HealthReport(pr=pr, status=MergeStatus.READY, issue_comment_count=5)
+        report = HealthReport(pr=pr, status=MergeStatus.READY, comment_count=5)
         result = self._run_audit(pr, report, "--no-state")
         assert result.exit_code == 0
         assert not state_file.exists()
@@ -512,7 +511,7 @@ class TestStateFlags:
     def test_status_filter_skips_save(self, tmp_path, monkeypatch):
         state_file = self._isolate(monkeypatch, tmp_path)
         pr = _sample_pr(1)
-        report = HealthReport(pr=pr, status=MergeStatus.READY, issue_comment_count=5)
+        report = HealthReport(pr=pr, status=MergeStatus.READY, comment_count=5)
         result = self._run_audit(pr, report, "--status", "READY")
         assert result.exit_code == 0
         # No save with --status filter.
@@ -521,7 +520,7 @@ class TestStateFlags:
     def test_author_other_skips_state(self, tmp_path, monkeypatch):
         state_file = self._isolate(monkeypatch, tmp_path)
         pr = _sample_pr(1)
-        report = HealthReport(pr=pr, status=MergeStatus.READY, issue_comment_count=5)
+        report = HealthReport(pr=pr, status=MergeStatus.READY, comment_count=5)
         result = self._run_audit(pr, report, "--author", "octocat")
         assert result.exit_code == 0
         assert not state_file.exists()
@@ -530,11 +529,11 @@ class TestStateFlags:
         state_file = self._isolate(monkeypatch, tmp_path)
         pr = _sample_pr(1)
         # Prime state with a baseline.
-        baseline = HealthReport(pr=pr, status=MergeStatus.READY, issue_comment_count=2, review_event_count=0)
+        baseline = HealthReport(pr=pr, status=MergeStatus.READY, comment_count=2)
         self._run_audit(pr, baseline)
         baseline_mtime = state_file.stat().st_mtime
         # Now run --peek with a higher count.
-        bumped = HealthReport(pr=pr, status=MergeStatus.READY, issue_comment_count=5, review_event_count=0)
+        bumped = HealthReport(pr=pr, status=MergeStatus.READY, comment_count=5)
         import time as _time
 
         _time.sleep(0.01)
@@ -548,18 +547,18 @@ class TestStateFlags:
     def test_delta_displayed_on_normal_run(self, tmp_path, monkeypatch):
         self._isolate(monkeypatch, tmp_path)
         pr = _sample_pr(1)
-        baseline = HealthReport(pr=pr, status=MergeStatus.READY, issue_comment_count=2)
+        baseline = HealthReport(pr=pr, status=MergeStatus.READY, comment_count=2)
         self._run_audit(pr, baseline)
-        bumped = HealthReport(pr=pr, status=MergeStatus.READY, issue_comment_count=5)
+        bumped = HealthReport(pr=pr, status=MergeStatus.READY, comment_count=5)
         result = self._run_audit(pr, bumped)
         assert "5*" in result.output
 
     def test_delta_marked_seen_after_normal_run(self, tmp_path, monkeypatch):
         self._isolate(monkeypatch, tmp_path)
         pr = _sample_pr(1)
-        baseline = HealthReport(pr=pr, status=MergeStatus.READY, issue_comment_count=2)
+        baseline = HealthReport(pr=pr, status=MergeStatus.READY, comment_count=2)
         self._run_audit(pr, baseline)
-        bumped = HealthReport(pr=pr, status=MergeStatus.READY, issue_comment_count=5)
+        bumped = HealthReport(pr=pr, status=MergeStatus.READY, comment_count=5)
         self._run_audit(pr, bumped)  # marks as seen
         result = self._run_audit(pr, bumped)  # third run, no new activity
         # Count should show without * (no new activity). The * only appears
@@ -569,7 +568,7 @@ class TestStateFlags:
     def test_error_path_does_not_clobber_baseline(self, tmp_path, monkeypatch):
         state_file = self._isolate(monkeypatch, tmp_path)
         pr = _sample_pr(1)
-        good = HealthReport(pr=pr, status=MergeStatus.READY, issue_comment_count=10)
+        good = HealthReport(pr=pr, status=MergeStatus.READY, comment_count=10)
         self._run_audit(pr, good)
         # Now simulate a failure for the same PR.
         errored = HealthReport(pr=pr, status=MergeStatus.UNKNOWN, error="api failure")
@@ -578,7 +577,7 @@ class TestStateFlags:
 
         data = _json.loads(state_file.read_text())
         # Baseline must be preserved at 10, NOT clobbered by the error path's 0.
-        assert data["prs"][pr.url]["issue_comments"] == 10
+        assert data["prs"][pr.url]["comment_count"] == 10
 
 
 class TestStatePathSubcommand:
@@ -821,3 +820,56 @@ def test_enrich_closed_prs_success_populates_review_count():
         _enrich_closed_prs([closed], workers=1)
 
     assert closed.review_count == 2
+
+
+def test_enrich_closed_prs_full_path_through_graphql():
+    """T10: end-to-end regression guard — _enrich_closed_prs → view_pr (GraphQL) →
+    len(data["reviews"]) → review_count. Mocks subprocess (not view_pr) so the
+    GraphQL parsing path is exercised, not bypassed."""
+    import json
+
+    from pr_owl.cli import _enrich_closed_prs
+
+    closed = _sample_closed_pr()
+
+    graphql_response = json.dumps(
+        {
+            "data": {
+                "repository": {
+                    "pullRequest": {
+                        "number": 42,
+                        "title": "x",
+                        "url": "https://github.com/acme/repo/pull/42",
+                        "isDraft": False,
+                        "mergeable": "MERGEABLE",
+                        "mergeStateStatus": "CLEAN",
+                        "reviewDecision": "APPROVED",
+                        "headRefName": "f",
+                        "baseRefName": "main",
+                        "headRepository": {"name": "repo"},
+                        "headRepositoryOwner": {"login": "acme"},
+                        "totalCommentsCount": 0,
+                        "reviews": {
+                            "totalCount": 3,
+                            "nodes": [
+                                {"state": "APPROVED"},
+                                {"state": "COMMENTED"},
+                                {"state": "CHANGES_REQUESTED"},
+                            ],
+                        },
+                        "commits": {
+                            "nodes": [
+                                {"commit": {"statusCheckRollup": {"state": "SUCCESS", "contexts": {"nodes": []}}}}
+                            ]
+                        },
+                    }
+                }
+            }
+        }
+    )
+
+    with patch("subprocess.run") as mock_run:
+        mock_run.return_value = MagicMock(returncode=0, stdout=graphql_response, stderr="")
+        _enrich_closed_prs([closed], workers=1)
+
+    assert closed.review_count == 3

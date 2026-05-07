@@ -158,7 +158,7 @@ def _retry_unknown_reports(
 
 
 def _annotate_comment_deltas(reports: list[HealthReport], state: dict) -> None:
-    """Mutate each report with new_issue_comments / new_review_events vs `state`.
+    """Mutate each report with new_comments vs `state`.
 
     Must run after _retry_unknown_reports so retry-resolved counts are
     annotated against the loaded baseline (not zeros from the failed
@@ -166,9 +166,7 @@ def _annotate_comment_deltas(reports: list[HealthReport], state: dict) -> None:
     correctly for the filtered subset.
     """
     for report in reports:
-        new_issue, new_review = compute_delta(report, state)
-        report.new_issue_comments = new_issue
-        report.new_review_events = new_review
+        report.new_comments = compute_delta(report, state)
 
 
 @click.group(invoke_without_command=True)

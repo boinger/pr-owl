@@ -21,5 +21,6 @@
       "state": "FAILURE",
       "targetUrl": "https://ci.external.com/build/789"
     }
-  ]
+  ],
+  "totalCommentsCount": 0
 }

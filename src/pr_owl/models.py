@@ -153,16 +153,13 @@ class HealthReport:
     head_repo: str = ""
     error: str = ""
     behind_by: int = 0  # commits behind base; 0 = up to date or unknown
-    # Comment activity counters. issue_comment_count and review_event_count are
-    # populated by check_pr from the gh response. new_issue_comments and
-    # new_review_events are populated by _annotate_comment_deltas in cli.py
-    # against the persisted state from the previous audit run. Defaults keep
-    # error-path construction sites (HealthReport(pr=pr, status=UNKNOWN, error=...))
-    # working without modification.
-    issue_comment_count: int = 0
-    review_event_count: int = 0
-    new_issue_comments: int = 0
-    new_review_events: int = 0
+    # Comment activity counter sourced from GitHub's totalCommentsCount (the
+    # canonical count used in /pulls and notifications). new_comments is
+    # populated by _annotate_comment_deltas in cli.py against the persisted
+    # state from the previous audit run. Defaults keep error-path construction
+    # sites (HealthReport(pr=pr, status=UNKNOWN, error=...)) working.
+    comment_count: int = 0
+    new_comments: int = 0
 
     @property
     def is_ready(self) -> bool:

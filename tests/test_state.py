@@ -31,8 +31,7 @@ def isolated_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 def _make_report(
     number: int = 1,
     repo: str = "acme/api",
-    issue_comments: int = 0,
-    review_events: int = 0,
+    comment_count: int = 0,
     status: MergeStatus = MergeStatus.READY,
     error: str = "",
     url: str | None = None,
@@ -50,8 +49,7 @@ def _make_report(
         pr=pr,
         status=status,
         error=error,
-        issue_comment_count=issue_comments,
-        review_event_count=review_events,
+        comment_count=comment_count,
     )
 
 
@@ -108,12 +106,11 @@ def test_load_state_missing_file_returns_empty(isolated_state: Path) -> None:
 
 
 def test_load_state_roundtrip(isolated_state: Path) -> None:
-    save_state({}, [_make_report(issue_comments=3, review_events=1)])
+    save_state({}, [_make_report(comment_count=4)])
     loaded = load_state()
     assert loaded["version"] == CURRENT_VERSION
     assert "https://github.com/acme/api/pull/1" in loaded["prs"]
-    assert loaded["prs"]["https://github.com/acme/api/pull/1"]["issue_comments"] == 3
-    assert loaded["prs"]["https://github.com/acme/api/pull/1"]["review_events"] == 1
+    assert loaded["prs"]["https://github.com/acme/api/pull/1"]["comment_count"] == 4
 
 
 def test_load_state_corrupt_file_renames_and_returns_empty(isolated_state: Path) -> None:
@@ -138,7 +135,7 @@ def test_load_state_wrong_top_level_type(isolated_state: Path) -> None:
 def test_load_state_higher_version_marks_read_only(isolated_state: Path) -> None:
     isolated_state.parent.mkdir(parents=True, exist_ok=True)
     isolated_state.write_text(
-        json.dumps({"version": CURRENT_VERSION + 99, "prs": {"x": {"issue_comments": 5}}}),
+        json.dumps({"version": CURRENT_VERSION + 99, "prs": {"x": {"comment_count": 5}}}),
         encoding="utf-8",
     )
     result = load_state()
@@ -146,6 +143,74 @@ def test_load_state_higher_version_marks_read_only(isolated_state: Path) -> None
     # The file is preserved untouched.
     raw = json.loads(isolated_state.read_text())
     assert raw["version"] == CURRENT_VERSION + 99
+
+
+def test_load_state_lower_version_resets_baseline(isolated_state: Path, caplog: pytest.LogCaptureFixture) -> None:
+    """T1: a v2 state file (older schema) is treated as empty under v3 — so deltas
+    don't compute against incompatible old baselines. DX3 surfaces a warning log."""
+    isolated_state.parent.mkdir(parents=True, exist_ok=True)
+    isolated_state.write_text(
+        json.dumps({"version": 2, "prs": {"https://github.com/x/y/pull/1": {"issue_comments": 5, "review_events": 2}}}),
+        encoding="utf-8",
+    )
+    with caplog.at_level("WARNING"):
+        result = load_state()
+    # No "prs" key — the old baseline is dropped.
+    assert "prs" not in result
+    # DX3: surfaced as a warning so the user understands why * markers vanished for one cycle.
+    assert any("State schema upgraded" in rec.message for rec in caplog.records)
+
+
+def test_save_state_rebuilds_after_version_mismatch(isolated_state: Path) -> None:
+    """T2: first v3 save after loading a v2 file does NOT preserve untouched v2 entries.
+    The output file contains only entries from the current reports + version=CURRENT."""
+    isolated_state.parent.mkdir(parents=True, exist_ok=True)
+    # Pre-existing v2 file with two PRs.
+    isolated_state.write_text(
+        json.dumps(
+            {
+                "version": 2,
+                "prs": {
+                    "https://github.com/old/repo/pull/99": {"issue_comments": 1, "review_events": 0},
+                    "https://github.com/old/repo/pull/100": {"issue_comments": 4, "review_events": 2},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    state = load_state()
+    save_state(state, [_make_report(number=1, comment_count=3)])
+    loaded = load_state()
+    assert loaded["version"] == CURRENT_VERSION
+    # Only the report we just saved is present — the v2 entries were dropped, not merged.
+    assert list(loaded["prs"].keys()) == ["https://github.com/acme/api/pull/1"]
+    assert loaded["prs"]["https://github.com/acme/api/pull/1"]["comment_count"] == 3
+    # No leftover v2 keys.
+    entry = loaded["prs"]["https://github.com/acme/api/pull/1"]
+    assert "issue_comments" not in entry
+    assert "review_events" not in entry
+
+
+def test_read_inside_lock_rejects_higher_version(isolated_state: Path) -> None:
+    """T4: if a newer pr-owl writes a higher-version file between our load and save,
+    save_state must refuse to overwrite (would otherwise downgrade)."""
+    isolated_state.parent.mkdir(parents=True, exist_ok=True)
+    # Initial v3 file we'll "load" from.
+    isolated_state.write_text(
+        json.dumps({"version": CURRENT_VERSION, "prs": {}}),
+        encoding="utf-8",
+    )
+    state = load_state()  # State as we saw it at audit start.
+    # Now simulate a newer pr-owl version writing a higher-version file.
+    isolated_state.write_text(
+        json.dumps({"version": CURRENT_VERSION + 1, "prs": {"new": {"comment_count": 99}}}),
+        encoding="utf-8",
+    )
+    # save_state should NOT overwrite — the newer file's contents stay intact.
+    save_state(state, [_make_report(number=1, comment_count=3)])
+    final = json.loads(isolated_state.read_text())
+    assert final["version"] == CURRENT_VERSION + 1
+    assert "new" in final["prs"]
 
 
 def test_load_state_unreadable_file_raises_state_error(isolated_state: Path) -> None:
@@ -166,26 +231,26 @@ def test_load_state_unreadable_file_raises_state_error(isolated_state: Path) -> 
 
 def test_save_state_creates_dir_and_file(isolated_state: Path) -> None:
     assert not isolated_state.exists()
-    save_state({}, [_make_report(issue_comments=2)])
+    save_state({}, [_make_report(comment_count=2)])
     assert isolated_state.exists()
     assert isolated_state.parent.is_dir()
 
 
 def test_save_state_sets_file_mode_0600(isolated_state: Path) -> None:
-    save_state({}, [_make_report(issue_comments=1)])
+    save_state({}, [_make_report(comment_count=1)])
     mode = isolated_state.stat().st_mode & 0o777
     assert mode == 0o600
 
 
 def test_save_state_skipped_when_read_only(isolated_state: Path) -> None:
-    save_state({"_read_only": True}, [_make_report(issue_comments=5)])
+    save_state({"_read_only": True}, [_make_report(comment_count=5)])
     assert not isolated_state.exists()
 
 
 def test_save_state_filters_unknown_status(isolated_state: Path) -> None:
     reports = [
-        _make_report(number=1, issue_comments=5, status=MergeStatus.READY),
-        _make_report(number=2, issue_comments=99, status=MergeStatus.UNKNOWN),
+        _make_report(number=1, comment_count=5, status=MergeStatus.READY),
+        _make_report(number=2, comment_count=99, status=MergeStatus.UNKNOWN),
     ]
     save_state({}, reports)
     loaded = load_state()
@@ -196,8 +261,8 @@ def test_save_state_filters_unknown_status(isolated_state: Path) -> None:
 
 def test_save_state_filters_reports_with_error(isolated_state: Path) -> None:
     reports = [
-        _make_report(number=1, issue_comments=5),
-        _make_report(number=2, issue_comments=99, error="something broke"),
+        _make_report(number=1, comment_count=5),
+        _make_report(number=2, comment_count=99, error="something broke"),
     ]
     save_state({}, reports)
     loaded = load_state()
@@ -205,7 +270,7 @@ def test_save_state_filters_reports_with_error(isolated_state: Path) -> None:
 
 
 def test_save_state_skips_invalid_urls(isolated_state: Path) -> None:
-    bad = _make_report(issue_comments=5, url="")
+    bad = _make_report(comment_count=5, url="")
     save_state({}, [bad])
     # Empty URL means no entries to save AND no existing state — file should not exist.
     assert not isolated_state.exists()
@@ -217,8 +282,8 @@ def test_save_state_merge_preserves_existing_entries(isolated_state: Path) -> No
     save_state(
         {},
         [
-            _make_report(number=1, issue_comments=5),
-            _make_report(number=2, issue_comments=10),
+            _make_report(number=1, comment_count=5),
+            _make_report(number=2, comment_count=10),
         ],
     )
     # Second run: PR A succeeds with new count, PR B errors out.
@@ -226,19 +291,19 @@ def test_save_state_merge_preserves_existing_entries(isolated_state: Path) -> No
     save_state(
         state,
         [
-            _make_report(number=1, issue_comments=7),
-            _make_report(number=2, issue_comments=0, status=MergeStatus.UNKNOWN, error="api failed"),
+            _make_report(number=1, comment_count=7),
+            _make_report(number=2, comment_count=0, status=MergeStatus.UNKNOWN, error="api failed"),
         ],
     )
     final = load_state()
     # PR A updated.
-    assert final["prs"]["https://github.com/acme/api/pull/1"]["issue_comments"] == 7
+    assert final["prs"]["https://github.com/acme/api/pull/1"]["comment_count"] == 7
     # PR B preserved at the original baseline (10), NOT clobbered by the error-path 0.
-    assert final["prs"]["https://github.com/acme/api/pull/2"]["issue_comments"] == 10
+    assert final["prs"]["https://github.com/acme/api/pull/2"]["comment_count"] == 10
 
 
 def test_save_state_atomic_write_no_tmp_left_behind(isolated_state: Path) -> None:
-    save_state({}, [_make_report(issue_comments=1)])
+    save_state({}, [_make_report(comment_count=1)])
     leftovers = list(isolated_state.parent.glob("seen.json.tmp"))
     assert leftovers == []
 
@@ -247,7 +312,7 @@ def test_save_state_concurrent_writers_dont_corrupt(isolated_state: Path) -> Non
     """Two threads saving simultaneously must produce a valid file with both updates merged."""
 
     def saver(report_number: int) -> None:
-        save_state({}, [_make_report(number=report_number, issue_comments=report_number * 10)])
+        save_state({}, [_make_report(number=report_number, comment_count=report_number * 10)])
 
     t1 = threading.Thread(target=saver, args=(1,))
     t2 = threading.Thread(target=saver, args=(2,))
@@ -262,16 +327,15 @@ def test_save_state_concurrent_writers_dont_corrupt(isolated_state: Path) -> Non
     urls = loaded["prs"].keys()
     assert "https://github.com/acme/api/pull/1" in urls
     assert "https://github.com/acme/api/pull/2" in urls
-    assert loaded["prs"]["https://github.com/acme/api/pull/1"]["issue_comments"] == 10
-    assert loaded["prs"]["https://github.com/acme/api/pull/2"]["issue_comments"] == 20
+    assert loaded["prs"]["https://github.com/acme/api/pull/1"]["comment_count"] == 10
+    assert loaded["prs"]["https://github.com/acme/api/pull/2"]["comment_count"] == 20
 
 
-def test_save_state_writes_review_events(isolated_state: Path) -> None:
-    save_state({}, [_make_report(issue_comments=2, review_events=4)])
+def test_save_state_writes_comment_count(isolated_state: Path) -> None:
+    save_state({}, [_make_report(comment_count=6)])
     loaded = load_state()
     entry = loaded["prs"]["https://github.com/acme/api/pull/1"]
-    assert entry["issue_comments"] == 2
-    assert entry["review_events"] == 4
+    assert entry["comment_count"] == 6
     assert "last_seen_at" in entry
 
 
@@ -281,43 +345,47 @@ def test_save_state_writes_review_events(isolated_state: Path) -> None:
 
 
 def test_compute_delta_first_seen_returns_zero() -> None:
-    report = _make_report(issue_comments=5, review_events=2)
-    assert compute_delta(report, {}) == (0, 0)
+    report = _make_report(comment_count=7)
+    assert compute_delta(report, {}) == 0
 
 
 def test_compute_delta_unchanged() -> None:
-    report = _make_report(issue_comments=5, review_events=2)
-    state = {"prs": {report.pr.url: {"issue_comments": 5, "review_events": 2}}}
-    assert compute_delta(report, state) == (0, 0)
+    report = _make_report(comment_count=7)
+    state = {"prs": {report.pr.url: {"comment_count": 7}}}
+    assert compute_delta(report, state) == 0
 
 
 def test_compute_delta_increase() -> None:
-    report = _make_report(issue_comments=7, review_events=3)
-    state = {"prs": {report.pr.url: {"issue_comments": 5, "review_events": 2}}}
-    assert compute_delta(report, state) == (2, 1)
+    report = _make_report(comment_count=10)
+    state = {"prs": {report.pr.url: {"comment_count": 7}}}
+    assert compute_delta(report, state) == 3
 
 
 def test_compute_delta_decrease_clamps_to_zero() -> None:
-    report = _make_report(issue_comments=3, review_events=1)
-    state = {"prs": {report.pr.url: {"issue_comments": 5, "review_events": 2}}}
-    assert compute_delta(report, state) == (0, 0)
-
-
-def test_compute_delta_mixed() -> None:
-    report = _make_report(issue_comments=6, review_events=1)
-    state = {"prs": {report.pr.url: {"issue_comments": 5, "review_events": 2}}}
-    assert compute_delta(report, state) == (1, 0)
+    report = _make_report(comment_count=4)
+    state = {"prs": {report.pr.url: {"comment_count": 7}}}
+    assert compute_delta(report, state) == 0
 
 
 def test_compute_delta_invalid_url_returns_zero() -> None:
-    report = _make_report(issue_comments=5, url="")
-    state = {"prs": {"https://github.com/acme/api/pull/1": {"issue_comments": 0, "review_events": 0}}}
-    assert compute_delta(report, state) == (0, 0)
+    report = _make_report(comment_count=5, url="")
+    state = {"prs": {"https://github.com/acme/api/pull/1": {"comment_count": 0}}}
+    assert compute_delta(report, state) == 0
 
 
 def test_compute_delta_handles_missing_prs_key() -> None:
-    report = _make_report(issue_comments=5)
-    assert compute_delta(report, {"version": 1}) == (0, 0)
+    report = _make_report(comment_count=5)
+    assert compute_delta(report, {"version": 1}) == 0
+
+
+def test_compute_delta_handles_malformed_prior_gracefully() -> None:
+    """Robustness: a prior dict missing the comment_count key (e.g. v2-shape leftover
+    or future schema drift) doesn't crash. Returns current as the "all new" delta because
+    the missing key defaults to 0. The v2-baseline scenario is prevented at load_state /
+    _read_inside_lock (which return {} for version != CURRENT), not here."""
+    report = _make_report(comment_count=12)
+    state = {"prs": {report.pr.url: {"issue_comments": 5, "review_events": 6}}}
+    assert compute_delta(report, state) == 12
 
 
 # ---------------------------------------------------------------------------
@@ -326,7 +394,7 @@ def test_compute_delta_handles_missing_prs_key() -> None:
 
 
 def test_save_state_writes_last_audit_at(isolated_state: Path) -> None:
-    save_state({}, [_make_report(issue_comments=1)])
+    save_state({}, [_make_report(comment_count=1)])
     loaded = load_state()
     assert "last_audit_at" in loaded
     # Should be a valid ISO timestamp.
@@ -336,10 +404,10 @@ def test_save_state_writes_last_audit_at(isolated_state: Path) -> None:
     assert dt.year >= 2026
 
 
-def test_save_state_writes_version_2(isolated_state: Path) -> None:
-    save_state({}, [_make_report(issue_comments=1)])
+def test_save_state_writes_current_version(isolated_state: Path) -> None:
+    save_state({}, [_make_report(comment_count=1)])
     loaded = load_state()
-    assert loaded["version"] == 2
+    assert loaded["version"] == CURRENT_VERSION
 
 
 # ---------------------------------------------------------------------------
@@ -364,35 +432,35 @@ def test_get_last_audit_at_returns_none_for_invalid_value() -> None:
     assert get_last_audit_at({"last_audit_at": "not-a-date"}) is None
 
 
-def test_v1_state_file_loads_normally(isolated_state: Path) -> None:
-    """A v1 file (no last_audit_at) loads fine; get_last_audit_at returns None."""
+def test_v1_state_file_resets_under_v3(isolated_state: Path) -> None:
+    """A v1 file is treated as empty under v3 (deltas reset for one cycle)."""
     isolated_state.parent.mkdir(parents=True, exist_ok=True)
     v1_data = {
         "version": 1,
         "prs": {
             "https://github.com/acme/api/pull/1": {
                 "issue_comments": 5,
-                "review_events": 2,
+                "review_events": 1,
                 "last_seen_at": "2026-04-01T00:00:00Z",
             }
         },
     }
     isolated_state.write_text(json.dumps(v1_data), encoding="utf-8")
     loaded = load_state()
-    assert loaded["version"] == 1
-    assert "https://github.com/acme/api/pull/1" in loaded["prs"]
+    assert "prs" not in loaded
     assert get_last_audit_at(loaded) is None
 
 
-def test_v2_state_file_roundtrips(isolated_state: Path) -> None:
-    """A v2 state file with last_audit_at loads correctly and preserves the timestamp."""
+def test_v2_state_file_resets_under_v3(isolated_state: Path) -> None:
+    """A v2 state file's baseline is dropped under v3 — prevents incorrect deltas
+    against incompatible old per-PR fields."""
     v2_data = {
         "version": 2,
         "last_audit_at": "2026-04-13T10:00:00+00:00",
         "prs": {
             "https://github.com/acme/api/pull/1": {
-                "issue_comments": 3,
-                "review_events": 1,
+                "issue_comments": 5,
+                "review_events": 2,
                 "last_seen_at": "2026-04-13T10:00:00Z",
             }
         },
@@ -400,10 +468,6 @@ def test_v2_state_file_roundtrips(isolated_state: Path) -> None:
     isolated_state.parent.mkdir(parents=True, exist_ok=True)
     isolated_state.write_text(json.dumps(v2_data), encoding="utf-8")
     loaded = load_state()
-    assert loaded["version"] == 2
-    assert loaded["last_audit_at"] == "2026-04-13T10:00:00+00:00"
-    last = get_last_audit_at(loaded)
-    assert last is not None
-    assert last.year == 2026
-    assert last.month == 4
-    assert last.day == 13
+    # Version mismatch: load_state returns the schema-reset sentinel without prs/last_audit_at.
+    assert "prs" not in loaded
+    assert get_last_audit_at(loaded) is None
