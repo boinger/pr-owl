@@ -161,13 +161,19 @@ def print_table(reports: list[HealthReport]) -> None:
     # header "Blockers" = 8 chars (header is the binding constraint). Updated:
     # YYYY-MM-DD = 10 chars. Open: 4-digit days = 4 chars, header "Open" = 4.
     table.add_column("Status", width=10)
-    table.add_column("PR", min_width=20, ratio=1)
+    # PR uses min_width=33 to fit the longest realistic ref
+    # (e.g. "prusa3d/Prusa-Firmware-Buddy#5254" = 33 chars) without ellipsis
+    # truncation. overflow="fold" wraps any future ref that exceeds 33 chars
+    # instead of cropping. No ratio: PR doesn't grow on wide terminals — refs
+    # don't get longer, so the extra width is better spent on Title.
+    table.add_column("PR", min_width=33, overflow="fold")
     # Title uses overflow="fold" so long titles (including the error snippet
     # appended when report.error is set) wrap across multiple lines instead of
     # being silently cropped with "…". Removing this will regress DX-1 — the
     # error visibility fix. See tests/test_output.py::test_long_error_title_folds_not_crops.
-    # ratio=2 gives Title twice the extra-width share of PR — titles are longer.
-    table.add_column("Title", min_width=30, overflow="fold", ratio=2)
+    # min_width=22 leaves headroom at 120-col terminals after PR's 33-char floor;
+    # ratio=2 still lets Title absorb all elastic space on wider terminals.
+    table.add_column("Title", min_width=22, overflow="fold", ratio=2)
     table.add_column("Blockers", width=8, justify="center")
     table.add_column("💬", width=5, justify="center")
     table.add_column("Updated", width=10)
@@ -235,8 +241,8 @@ def print_closed_table(closed: list[ClosedPRInfo]) -> None:
 
     table = Table(show_header=True, header_style="bold", width=min(console.width, _TABLE_WIDTH_CAP))
     table.add_column("Disposition", width=12)
-    table.add_column("PR", min_width=20, ratio=1)
-    table.add_column("Title", min_width=30, overflow="fold", ratio=2)
+    table.add_column("PR", min_width=33, overflow="fold")
+    table.add_column("Title", min_width=22, overflow="fold", ratio=2)
     table.add_column("Days", width=6, justify="right")
     table.add_column("Reviews", width=8, justify="center")
     table.add_column("Closed", width=12)
