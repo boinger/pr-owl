@@ -59,6 +59,8 @@ This is non-blocking — proceed with the fix workflow after surfacing it. The p
 
 If `data["closed"]` is non-empty, also render a brief closed-PR summary table using the same column-source-of-truth principle (see `print_closed_table` in `output.py`).
 
+**Comment-count phrasing rule (applies to all prose summaries):** `X*` in the table means *X total comments, at least one new since last audit*. The `*` is a flag, not a count. When summarizing in prose, never say "X new comments" — say "X comments, some new" or "X comments (some unread)". Conflating the total with the delta misleads the user about how much new feedback there is.
+
 Then present a brief summary of what you found and what you're about to do.
 
 ### Step 2: For each non-ready PR, fix it
@@ -198,6 +200,8 @@ This is the ONLY pr-owl invocation in Audit Mode. Do NOT capture JSON; do NOT ma
 Adapt: `--stale-days 14`, `--repo owner/repo`, `--status CONFLICTS`
 
 After showing the table, briefly summarize what needs attention and offer to fix.
+
+**Comment-count phrasing rule:** in the rendered table, `X*` means *X total comments, at least one new since last audit*. The `*` is a flag, not a count. When summarizing in prose, never say "X new comments" — say "X comments, some new" or "X comments (some unread)". Same rule applies to Fix Mode summaries.
 
 ---
 
