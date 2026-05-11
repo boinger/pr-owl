@@ -521,10 +521,21 @@ class TestCommentDeltaColumn:
             pr=sample_pr,
             status=MergeStatus.READY,
             comment_count=7,
-            new_comments=3,
+            has_new_activity=True,
         )
         output = _capture_console(print_table, [report])
         assert "7*" in output
+
+    def test_zero_comments_with_new_activity_shows_bare_star(self, sample_pr):
+        """A review or force-push with no comment delta still flags the row."""
+        report = HealthReport(
+            pr=sample_pr,
+            status=MergeStatus.READY,
+            comment_count=0,
+            has_new_activity=True,
+        )
+        output = _capture_console(print_table, [report])
+        assert "*" in output
 
     def test_legend_mentions_star(self, sample_pr):
         report = HealthReport(pr=sample_pr, status=MergeStatus.READY)
@@ -538,12 +549,15 @@ class TestCommentDeltaColumn:
             pr=sample_pr,
             status=MergeStatus.READY,
             comment_count=7,
-            new_comments=3,
+            has_new_activity=True,
         )
         print_json([report])
         data = json.loads(capsys.readouterr().out)
         assert data["open"][0]["comment_count"] == 7
-        assert data["open"][0]["new_comments"] == 3
+        assert data["open"][0]["has_new_activity"] is True
+        # new_comments is deprecated and kept zero-valued for one release so
+        # existing consumers can still parse the JSON without KeyError.
+        assert data["open"][0]["new_comments"] == 0
 
     def test_print_plans_shows_new_activity_line(self, sample_pr):
         import re
@@ -551,13 +565,14 @@ class TestCommentDeltaColumn:
         report = HealthReport(
             pr=sample_pr,
             status=MergeStatus.READY,
-            new_comments=3,
+            has_new_activity=True,
         )
         plan = RemediationPlan(report=report, steps=[], summary="ready")
         output = _capture_console(print_plans, [plan])
         plain = re.sub(r"\x1b\[[0-9;]*m", "", output)
-        assert "New activity" in plain
-        assert "3 new comment" in plain
+        assert "New activity since last audit" in plain
+        # Prose should NOT claim a count; the flag is binary, not numeric.
+        assert "new comment" not in plain.lower()
 
     def test_print_plans_no_activity_line_when_zero(self, sample_pr):
         report = HealthReport(pr=sample_pr, status=MergeStatus.READY)

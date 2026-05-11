@@ -29,7 +29,7 @@ uv tool install --from git+https://github.com/boinger/pr-owl.git pr-owl
 - **"details"** → **Details mode**
 - Ambiguous → **Audit mode**
 
-The modes are mutually exclusive. Once you've picked a mode, follow ONLY that mode's invocation pattern. Never run a `--json` capture in Audit Mode, and never run a separate `pr-owl audit` table render in Fix Mode. Mixing patterns causes a state-update race that hides the `*` indicator for new comments (see `cli.py:395-397` save guard and `output.py:168` asterisk condition).
+The modes are mutually exclusive. Once you've picked a mode, follow ONLY that mode's invocation pattern. Never run a `--json` capture in Audit Mode, and never run a separate `pr-owl audit` table render in Fix Mode. Mixing patterns causes a state-update race that hides the `*` indicator for new activity (see `cli.py:395-397` save guard and `output.py` asterisk condition).
 
 ---
 
@@ -47,7 +47,7 @@ pr-owl audit --json 2>/dev/null > /tmp/pr-owl-audit.json && echo "Audit saved"
 
 Then use the Read tool to read `/tmp/pr-owl-audit.json`. The JSON is an object with `"open"` and `"closed"` arrays. Parse `data["open"]` to build the fix plan. The `"closed"` array shows recently resolved PRs (informational, no action needed).
 
-**Before processing the fix plan, check for new comment activity.** Each report in `data["open"]` has a `new_comments` field populated against the user's last `pr-owl audit` run. Any PR where `new_comments > 0` has feedback the user has not yet seen since their previous audit. Also check `data["closed"]` for recently closed PRs and mention them. List those PRs to the user FIRST, with their URLs, before starting the fix workflow:
+**Before processing the fix plan, check for new activity.** Each report in `data["open"]` has a `has_new_activity` boolean populated against the user's last `pr-owl audit` run. Any PR where `has_new_activity` is `true` has feedback (comments, reviews, force-pushes, label changes) the user has not yet seen since their previous audit. Also check `data["closed"]` for recently closed PRs and mention them. List those PRs to the user FIRST, with their URLs, before starting the fix workflow:
 
 > Heads up: PR1 (URL), PR2 (URL) have new activity since your last audit. You may want to read those before I start fixing.
 
@@ -55,11 +55,11 @@ This is non-blocking — proceed with the fix workflow after surfacing it. The p
 
 **Do NOT additionally run `pr-owl audit 2>&1` to render the table for the user at this point.** That second invocation loads the just-saved state file (the `--json` call above commits state via `save_state()` at `cli.py:397`) and computes zero comment deltas, hiding the `*` indicator for genuinely new activity. The Step 3 verify call (after fixes are applied) is the only non-JSON `pr-owl audit` invocation in Fix Mode.
 
-**Render an open-PR summary as a markdown table from the JSON you just loaded.** Match the same columns and row order that the CLI's rich table uses — see `print_table` in `src/pr_owl/output.py` for the source of truth. The JSON's `open` array is already sorted by the CLI via `sort_open_reports`; preserve that order, do not re-sort. For the comment count column, render `X*` (with the asterisk) when `new_comments > 0`; otherwise render `X` for any non-zero `comment_count`, blank when zero. This is the assistant-rendered equivalent of the rich table the CLI would have produced, and it correctly shows the `*` because the JSON contains the delta computed against pre-save state.
+**Render an open-PR summary as a markdown table from the JSON you just loaded.** Match the same columns and row order that the CLI's rich table uses — see `print_table` in `src/pr_owl/output.py` for the source of truth. The JSON's `open` array is already sorted by the CLI via `sort_open_reports`; preserve that order, do not re-sort. For the comment count column, render `X*` (with the asterisk) when `has_new_activity` is `true` AND `comment_count > 0`; render `*` alone when `has_new_activity` is `true` but `comment_count == 0` (activity like a review or force-push, no comment); otherwise render `X` for any non-zero `comment_count`, blank when zero. This is the assistant-rendered equivalent of the rich table the CLI would have produced.
 
 If `data["closed"]` is non-empty, also render a brief closed-PR summary table using the same column-source-of-truth principle (see `print_closed_table` in `output.py`).
 
-**Comment-count phrasing rule (applies to all prose summaries):** `X*` in the table means *X total comments, at least one new since last audit*. The `*` is a flag, not a count. When summarizing in prose, never say "X new comments" — say "X comments, some new" or "X comments (some unread)". Conflating the total with the delta misleads the user about how much new feedback there is.
+**Activity-flag phrasing rule (applies to all prose summaries):** `*` in the table means *new activity since last audit* — could be a comment, review, force-push, or label change. `X*` means *X total comments AND new activity*. The `*` is a flag, not a count, and it doesn't tell you what kind of activity. When summarizing in prose, never say "X new comments" — say "X comments, new activity since last audit" or "new activity" (without conflating count and flag). Look at the actual PR (via gh CLI or web) to see what specifically changed.
 
 Then present a brief summary of what you found and what you're about to do.
 
@@ -201,7 +201,7 @@ Adapt: `--stale-days 14`, `--repo owner/repo`, `--status CONFLICTS`
 
 After showing the table, briefly summarize what needs attention and offer to fix.
 
-**Comment-count phrasing rule:** in the rendered table, `X*` means *X total comments, at least one new since last audit*. The `*` is a flag, not a count. When summarizing in prose, never say "X new comments" — say "X comments, some new" or "X comments (some unread)". Same rule applies to Fix Mode summaries.
+**Activity-flag phrasing rule:** in the rendered table, `*` means *new activity since last audit* (comments, reviews, force-pushes, or label changes — the column shows comment count but the `*` flag covers any activity). `X*` means *X comments AND new activity since last audit*. When summarizing in prose, never say "X new comments" — say "X comments, new activity since last audit" or just "new activity". Look at the actual PR to see what changed. Same rule applies to Fix Mode summaries.
 
 ---
 
@@ -219,7 +219,7 @@ pr-owl audit --details 2>&1
 - `--workers` controls concurrent health checks (default 5, 1=serial for debugging).
 - JSON goes to stdout, table/details go to stderr.
 - `headRepository.nameWithOwner` is always empty from `gh pr view`. The JSON uses `headRepositoryOwner.login` + `headRepository.name` to construct `head_repo`.
-- **Comment tracking fields**: Each report includes `comment_count` (current total, sourced from GitHub's GraphQL `totalCommentsCount` — the canonical number used in /pulls and notifications) plus `new_comments` (delta since the user's previous audit, computed against `~/.local/state/pr-owl/seen.json`). The delta is auto-marked as seen on each `pr-owl audit` run that does not pass `--peek` or `--no-state`. Use the delta to surface unread feedback before starting any fix workflow (see Fix Mode Step 1). State schema is v3; older state files are reset on first load (one cycle of zero deltas).
+- **Activity tracking fields**: Each report includes `comment_count` (current total comments, sourced from GitHub's GraphQL `totalCommentsCount` — the canonical number used in /pulls and notifications) plus `has_new_activity` (boolean: True iff the PR's `updated_at` is strictly after the relevant cutoff — per-PR `last_seen_at` for repeat sightings, global `last_audit_at` for first sightings). The cutoff is recorded in `~/.local/state/pr-owl/seen.json` and auto-marked as seen on each `pr-owl audit` run that does not pass `--peek` or `--no-state`. Use `has_new_activity` to surface unread activity before starting any fix workflow (see Fix Mode Step 1). The flag covers any PR-level activity (comments, reviews, force-pushes, labels) — it's NOT just comments. The `new_comments` field is deprecated (always 0) and retained one release for backward compat. State schema is v3.
 - **Recently closed PRs**: The audit automatically shows a "Recently closed" table with PRs that closed since the last audit. Each entry has `disposition` (MERGED/CLOSED), `days_open`, `review_count`, and `closed_at`. The `--json` output is now `{"open": [...], "closed": [...]}` (breaking change from the old bare array).
 - **--closed-since**: Override the default time window for closed PRs. Accepts `7d`, `2w`, `1m` (30 days), or ISO date. Use `--no-closed` to suppress the closed table entirely.
 - **--peek**: read-only audit. Loads state, computes deltas, shows them, but does NOT update state. Use when you only want to glance at activity without marking it seen.

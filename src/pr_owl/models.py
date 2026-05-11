@@ -153,12 +153,17 @@ class HealthReport:
     head_repo: str = ""
     error: str = ""
     behind_by: int = 0  # commits behind base; 0 = up to date or unknown
-    # Comment activity counter sourced from GitHub's totalCommentsCount (the
-    # canonical count used in /pulls and notifications). new_comments is
-    # populated by _annotate_comment_deltas in cli.py against the persisted
-    # state from the previous audit run. Defaults keep error-path construction
-    # sites (HealthReport(pr=pr, status=UNKNOWN, error=...)) working.
+    # Comment count sourced from GitHub's totalCommentsCount (the canonical count
+    # used in /pulls and notifications). Displayed in the 💬 column.
     comment_count: int = 0
+    # True iff the PR's updated_at is strictly after the cutoff (per-PR
+    # last_seen_at for repeat sightings, global last_audit_at for first
+    # sightings). Drives the `*` indicator. Populated by _annotate_activity_flag
+    # in cli.py against the persisted state from the previous audit run.
+    has_new_activity: bool = False
+    # Deprecated. Was a count of issue comments since last audit; replaced by
+    # has_new_activity boolean. Kept zero-valued in JSON output for one release
+    # so existing consumers don't crash. Remove at next schema bump.
     new_comments: int = 0
 
     @property

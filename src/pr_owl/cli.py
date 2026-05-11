@@ -25,7 +25,7 @@ from pr_owl.output import (
     print_table,
 )
 from pr_owl.planner import plan_remediation
-from pr_owl.state import compute_delta, get_last_audit_at, load_state, save_state, state_path
+from pr_owl.state import get_last_audit_at, has_new_activity, load_state, save_state, state_path
 
 logger = logging.getLogger(__name__)
 
@@ -157,16 +157,15 @@ def _retry_unknown_reports(
         logger.info("All %d PR(s) still UNKNOWN after retry.", still_unknown)
 
 
-def _annotate_comment_deltas(reports: list[HealthReport], state: dict) -> None:
-    """Mutate each report with new_comments vs `state`.
+def _annotate_activity_flag(reports: list[HealthReport], state: dict) -> None:
+    """Mutate each report with has_new_activity vs `state`.
 
-    Must run after _retry_unknown_reports so retry-resolved counts are
-    annotated against the loaded baseline (not zeros from the failed
-    initial check). Must run before --status filtering so deltas display
-    correctly for the filtered subset.
+    Must run after _retry_unknown_reports so retry-resolved reports flag
+    correctly against the loaded baseline. Must run before --status filtering
+    so the `*` indicator displays correctly for the filtered subset.
     """
     for report in reports:
-        report.new_comments = compute_delta(report, state)
+        report.has_new_activity = has_new_activity(report.pr, state)
 
 
 @click.group(invoke_without_command=True)
@@ -362,7 +361,7 @@ def audit(
             )
 
     # Annotate comment deltas (safe even when reports is empty)
-    _annotate_comment_deltas(reports, state)
+    _annotate_activity_flag(reports, state)
 
     # Enrich closed PRs with review count from gh pr view
     if closed:

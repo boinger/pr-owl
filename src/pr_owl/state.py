@@ -30,7 +30,7 @@ from pr_owl.exceptions import StateError
 from pr_owl.models import MergeStatus
 
 if TYPE_CHECKING:
-    from pr_owl.models import HealthReport
+    from pr_owl.models import HealthReport, PRInfo
 
 logger = logging.getLogger(__name__)
 
@@ -154,6 +154,22 @@ def load_state() -> dict:
     return data
 
 
+def _parse_iso(raw: object) -> datetime | None:
+    """Parse an ISO-8601 timestamp string. Returns None on failure or wrong type.
+
+    Accepts both `...Z` and `...+00:00` suffixes; tolerant of microsecond
+    precision differences. Used for `last_audit_at`, per-PR `last_seen_at`,
+    and PR `updated_at` — anything where a malformed timestamp should
+    silently degrade to "no cutoff" rather than crash the audit.
+    """
+    if not raw:
+        return None
+    try:
+        return datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        return None
+
+
 def get_last_audit_at(state: dict) -> datetime | None:
     """Extract the last_audit_at timestamp from loaded state.
 
@@ -162,33 +178,46 @@ def get_last_audit_at(state: dict) -> datetime | None:
     for the closed-PR table.
     """
     raw = state.get("last_audit_at")
-    if not raw:
-        return None
-    try:
-        return datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
-    except ValueError:
+    parsed = _parse_iso(raw)
+    if parsed is None and raw:
         logger.warning("state: could not parse last_audit_at '%s'; treating as absent", raw)
-        return None
+    return parsed
 
 
-def compute_delta(report: HealthReport, state: dict) -> int:
-    """Return new_comments for this report vs the stored baseline.
+def has_new_activity(pr: PRInfo, state: dict) -> bool:
+    """True iff the PR's updated_at is strictly after the relevant cutoff.
 
-    First-seen URLs return 0: the PR is new to us, not "all comments are new."
-    This matches user intuition — the first time pr-owl sees a PR, nothing is
-    flagged; deltas appear on subsequent runs.
+    Cutoff selection:
+    - repeat sighting (PR URL already in state): per-PR `last_seen_at`
+    - first sighting (URL not in state) with prior audit: global `last_audit_at`
+    - very-first-ever audit (no `last_audit_at`): False
 
-    Negative deltas (a comment was deleted) clamp to 0. We never display
-    negative numbers; the next save will update the stored count to the new
-    smaller value silently.
+    Strict `>` on comparison: equality with the cutoff returns False. This is
+    important on first sightings where the per-PR record gets written with
+    `last_seen_at = now`; the next audit's `updated_at` won't have changed,
+    so the boundary case correctly returns False.
+
+    `updated_at` is bumped by GitHub on any user-visible PR activity — issue
+    comments, review submissions, review-thread comments, force-pushes, label
+    changes. That breadth matches the README's "* = new since last audit"
+    promise; the count-based predecessor (compute_delta) was narrower than
+    documented.
     """
-    if not is_valid_pr_url(report.pr.url):
-        return 0
+    if not is_valid_pr_url(pr.url):
+        return False
+
     prs = state.get("prs") or {}
-    prior = prs.get(report.pr.url)
-    if not prior:
-        return 0
-    return max(0, report.comment_count - int(prior.get("comment_count", 0)))
+    prior = prs.get(pr.url)
+    if prior:
+        cutoff_raw = prior.get("last_seen_at")
+    else:
+        cutoff_raw = state.get("last_audit_at")
+
+    cutoff = _parse_iso(cutoff_raw)
+    if cutoff is None:
+        return False
+
+    return pr.updated_at_dt > cutoff
 
 
 def save_state(state: dict, reports: list[HealthReport]) -> None:

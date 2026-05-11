@@ -23,7 +23,7 @@ from pr_owl.models import (
 runner = CliRunner()
 
 
-def _sample_pr(number=42, repo="acme/repo"):
+def _sample_pr(number=42, repo="acme/repo", updated_at="2026-03-20T14:00:00Z"):
     return PRInfo(
         number=number,
         title=f"PR #{number}",
@@ -31,7 +31,7 @@ def _sample_pr(number=42, repo="acme/repo"):
         url=f"https://github.com/{repo}/pull/{number}",
         is_draft=False,
         created_at="2026-01-15T10:00:00Z",
-        updated_at="2026-03-20T14:00:00Z",
+        updated_at=updated_at,
     )
 
 
@@ -527,17 +527,20 @@ class TestStateFlags:
 
     def test_peek_loads_state_but_skips_save(self, tmp_path, monkeypatch):
         state_file = self._isolate(monkeypatch, tmp_path)
-        pr = _sample_pr(1)
-        # Prime state with a baseline.
-        baseline = HealthReport(pr=pr, status=MergeStatus.READY, comment_count=2)
-        self._run_audit(pr, baseline)
+        # Prime state. The baseline run writes last_seen_at = wall-clock now.
+        baseline_pr = _sample_pr(1, updated_at="2026-03-20T14:00:00Z")
+        baseline = HealthReport(pr=baseline_pr, status=MergeStatus.READY, comment_count=2)
+        self._run_audit(baseline_pr, baseline)
         baseline_mtime = state_file.stat().st_mtime
-        # Now run --peek with a higher count.
-        bumped = HealthReport(pr=pr, status=MergeStatus.READY, comment_count=5)
+        # Bumped PR uses a far-future updated_at so it's guaranteed strictly
+        # after the baseline's wall-clock last_seen_at — simulates real-world
+        # activity arriving after pr-owl last looked.
+        bumped_pr = _sample_pr(1, updated_at="2099-01-01T00:00:00Z")
+        bumped = HealthReport(pr=bumped_pr, status=MergeStatus.READY, comment_count=5)
         import time as _time
 
         _time.sleep(0.01)
-        result = self._run_audit(pr, bumped, "--peek")
+        result = self._run_audit(bumped_pr, bumped, "--peek")
         assert result.exit_code == 0
         # New activity should display with * indicator.
         assert "5*" in result.output
@@ -546,23 +549,34 @@ class TestStateFlags:
 
     def test_delta_displayed_on_normal_run(self, tmp_path, monkeypatch):
         self._isolate(monkeypatch, tmp_path)
-        pr = _sample_pr(1)
-        baseline = HealthReport(pr=pr, status=MergeStatus.READY, comment_count=2)
-        self._run_audit(pr, baseline)
-        bumped = HealthReport(pr=pr, status=MergeStatus.READY, comment_count=5)
-        result = self._run_audit(pr, bumped)
+        baseline_pr = _sample_pr(1, updated_at="2026-03-20T14:00:00Z")
+        baseline = HealthReport(pr=baseline_pr, status=MergeStatus.READY, comment_count=2)
+        self._run_audit(baseline_pr, baseline)
+        bumped_pr = _sample_pr(1, updated_at="2099-01-01T00:00:00Z")
+        bumped = HealthReport(pr=bumped_pr, status=MergeStatus.READY, comment_count=5)
+        result = self._run_audit(bumped_pr, bumped)
         assert "5*" in result.output
 
     def test_delta_marked_seen_after_normal_run(self, tmp_path, monkeypatch):
         self._isolate(monkeypatch, tmp_path)
-        pr = _sample_pr(1)
-        baseline = HealthReport(pr=pr, status=MergeStatus.READY, comment_count=2)
-        self._run_audit(pr, baseline)
-        bumped = HealthReport(pr=pr, status=MergeStatus.READY, comment_count=5)
-        self._run_audit(pr, bumped)  # marks as seen
-        result = self._run_audit(pr, bumped)  # third run, no new activity
-        # Count should show without * (no new activity). The * only appears
-        # when there are new comments since last audit.
+        baseline_pr = _sample_pr(1, updated_at="2026-03-20T14:00:00Z")
+        baseline = HealthReport(pr=baseline_pr, status=MergeStatus.READY, comment_count=2)
+        self._run_audit(baseline_pr, baseline)
+        # Second run with far-future updated_at flags activity, and marks the
+        # PR's last_seen_at to wall-clock now.
+        bumped_pr = _sample_pr(1, updated_at="2099-01-01T00:00:00Z")
+        bumped = HealthReport(pr=bumped_pr, status=MergeStatus.READY, comment_count=5)
+        self._run_audit(bumped_pr, bumped)
+        # Third run: same PR, same updated_at. last_seen_at was bumped past
+        # 2099 (no — last_seen_at is wall-clock now, ~2026). But the PR's
+        # updated_at (2099) is STILL strictly after that wall-clock-now stamp,
+        # so the second observation would re-flag. The intended "no new activity"
+        # semantic requires updated_at to NOT have moved relative to the prior
+        # save — use a fresh PR with an updated_at that doesn't exceed
+        # wall-clock-now.
+        unchanged_pr = _sample_pr(1, updated_at="2026-03-20T14:00:00Z")
+        unchanged = HealthReport(pr=unchanged_pr, status=MergeStatus.READY, comment_count=5)
+        result = self._run_audit(unchanged_pr, unchanged)
         assert "5*" not in result.output
 
     def test_error_path_does_not_clobber_baseline(self, tmp_path, monkeypatch):

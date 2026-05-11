@@ -193,9 +193,11 @@ def print_table(reports: list[HealthReport]) -> None:
         updated = report.pr.updated_at[:10] if report.pr.updated_at else ""
 
         comment_total = report.comment_count
-        has_new = report.new_comments > 0
         if comment_total > 0:
-            comment_cell = f"{comment_total}*" if has_new else str(comment_total)
+            comment_cell = f"{comment_total}*" if report.has_new_activity else str(comment_total)
+        elif report.has_new_activity:
+            # Activity (review, force-push, label change) without comments — still flag.
+            comment_cell = "*"
         else:
             comment_cell = ""
 
@@ -222,7 +224,8 @@ def print_table(reports: list[HealthReport]) -> None:
 
     console.print(table)
     console.print(
-        "[dim]⚡ = potentially fixable  👤 = waiting on others  💬 = comment count (* = new since last audit)[/dim]"
+        "[dim]⚡ = potentially fixable  👤 = waiting on others  "
+        "💬 = comment count (* = new activity since last audit)[/dim]"
     )
 
 
@@ -331,8 +334,8 @@ def print_plans(plans: list[RemediationPlan], audited_user: str | None = None) -
         style = _STATUS_STYLE.get(plan.report.status, "")
         console.print(f"  Status: [{style}]{plan.report.status.value}[/{style}]")
 
-        if plan.report.new_comments:
-            console.print(f"  [bold]💬 New activity:[/bold] {plan.report.new_comments} new comment(s)")
+        if plan.report.has_new_activity:
+            console.print("  [bold]💬 New activity since last audit[/bold]")
 
         if plan.report.error:
             console.print(f"  [red]Error:[/red] {plan.report.error}")

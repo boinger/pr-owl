@@ -1,4 +1,4 @@
-"""Tests for pr_owl.state — comment delta tracking persistence."""
+"""Tests for pr_owl.state — activity-flag tracking persistence."""
 
 from __future__ import annotations
 
@@ -12,8 +12,8 @@ from pr_owl.exceptions import StateError
 from pr_owl.models import HealthReport, MergeStatus, PRInfo
 from pr_owl.state import (
     CURRENT_VERSION,
-    compute_delta,
     get_last_audit_at,
+    has_new_activity,
     is_valid_pr_url,
     load_state,
     save_state,
@@ -35,6 +35,7 @@ def _make_report(
     status: MergeStatus = MergeStatus.READY,
     error: str = "",
     url: str | None = None,
+    updated_at: str = "2026-03-20T14:00:00Z",
 ) -> HealthReport:
     pr = PRInfo(
         number=number,
@@ -43,7 +44,7 @@ def _make_report(
         url=url if url is not None else f"https://github.com/{repo}/pull/{number}",
         is_draft=False,
         created_at="2026-01-15T10:00:00Z",
-        updated_at="2026-03-20T14:00:00Z",
+        updated_at=updated_at,
     )
     return HealthReport(
         pr=pr,
@@ -340,52 +341,93 @@ def test_save_state_writes_comment_count(isolated_state: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# compute_delta()
+# has_new_activity()
 # ---------------------------------------------------------------------------
 
 
-def test_compute_delta_first_seen_returns_zero() -> None:
-    report = _make_report(comment_count=7)
-    assert compute_delta(report, {}) == 0
+def test_has_new_activity_first_sighting_with_late_update() -> None:
+    """The user's exact reported bug: PR opened during weekend, maintainer
+    commented Monday, pr-owl ran for the first time on this PR Monday afternoon.
+    `updated_at` is after the previous `last_audit_at` → True."""
+    report = _make_report(updated_at="2026-05-11T07:00:00Z")
+    state = {"last_audit_at": "2026-05-09T10:00:00+00:00"}
+    assert has_new_activity(report.pr, state) is True
 
 
-def test_compute_delta_unchanged() -> None:
-    report = _make_report(comment_count=7)
-    state = {"prs": {report.pr.url: {"comment_count": 7}}}
-    assert compute_delta(report, state) == 0
+def test_has_new_activity_first_sighting_no_last_audit_at_returns_false() -> None:
+    """Very-first-ever audit: no cutoff to compare against, don't flag anything."""
+    report = _make_report(updated_at="2026-05-11T07:00:00Z")
+    assert has_new_activity(report.pr, {}) is False
 
 
-def test_compute_delta_increase() -> None:
-    report = _make_report(comment_count=10)
-    state = {"prs": {report.pr.url: {"comment_count": 7}}}
-    assert compute_delta(report, state) == 3
+def test_has_new_activity_first_sighting_pr_predates_last_audit_returns_false() -> None:
+    """First-sighting PR that's older than the last audit (we missed it earlier).
+    Its activity is not "new" from the user's perspective — they already had
+    a chance to see it."""
+    report = _make_report(updated_at="2026-05-09T10:00:00Z")
+    state = {"last_audit_at": "2026-05-11T10:00:00+00:00"}
+    assert has_new_activity(report.pr, state) is False
 
 
-def test_compute_delta_decrease_clamps_to_zero() -> None:
-    report = _make_report(comment_count=4)
-    state = {"prs": {report.pr.url: {"comment_count": 7}}}
-    assert compute_delta(report, state) == 0
+def test_has_new_activity_repeat_sighting_uses_per_pr_last_seen() -> None:
+    """Per-PR last_seen_at takes precedence over global last_audit_at.
+    last_audit_at is deliberately set to a value that would yield a different
+    answer; we verify the per-PR cutoff wins."""
+    report = _make_report(updated_at="2026-05-10T15:00:00Z")
+    state = {
+        "last_audit_at": "2026-05-09T10:00:00+00:00",  # would say True, but per-PR wins
+        "prs": {report.pr.url: {"last_seen_at": "2026-05-10T20:00:00+00:00"}},
+    }
+    assert has_new_activity(report.pr, state) is False
 
 
-def test_compute_delta_invalid_url_returns_zero() -> None:
-    report = _make_report(comment_count=5, url="")
-    state = {"prs": {"https://github.com/acme/api/pull/1": {"comment_count": 0}}}
-    assert compute_delta(report, state) == 0
+def test_has_new_activity_repeat_sighting_strictly_after() -> None:
+    """Repeat sighting where activity is strictly after the per-PR cutoff → True."""
+    report = _make_report(updated_at="2026-05-11T05:00:00Z")
+    state = {"prs": {report.pr.url: {"last_seen_at": "2026-05-10T20:00:00+00:00"}}}
+    assert has_new_activity(report.pr, state) is True
 
 
-def test_compute_delta_handles_missing_prs_key() -> None:
-    report = _make_report(comment_count=5)
-    assert compute_delta(report, {"version": 1}) == 0
+def test_has_new_activity_boundary_equality_returns_false() -> None:
+    """Strict `>`: equality is NOT new. Important because save_state sets
+    last_seen_at to a value reflecting the current run, and the next audit's
+    `updated_at` (if unchanged) must not falsely flag."""
+    report = _make_report(updated_at="2026-05-11T10:00:00Z")
+    state = {"last_audit_at": "2026-05-11T10:00:00+00:00"}
+    assert has_new_activity(report.pr, state) is False
 
 
-def test_compute_delta_handles_malformed_prior_gracefully() -> None:
-    """Robustness: a prior dict missing the comment_count key (e.g. v2-shape leftover
-    or future schema drift) doesn't crash. Returns current as the "all new" delta because
-    the missing key defaults to 0. The v2-baseline scenario is prevented at load_state /
-    _read_inside_lock (which return {} for version != CURRENT), not here."""
-    report = _make_report(comment_count=12)
-    state = {"prs": {report.pr.url: {"issue_comments": 5, "review_events": 6}}}
-    assert compute_delta(report, state) == 12
+def test_has_new_activity_malformed_cutoff_returns_false() -> None:
+    """Defensive: a malformed cutoff string in state must not crash the audit."""
+    report = _make_report(updated_at="2026-05-11T07:00:00Z")
+    state = {"last_audit_at": "not-an-iso-string"}
+    assert has_new_activity(report.pr, state) is False
+
+
+def test_has_new_activity_invalid_url_returns_false() -> None:
+    """Non-github URLs are never new-activity-flagged."""
+    report = _make_report(url="", updated_at="2026-05-11T07:00:00Z")
+    state = {"last_audit_at": "2026-05-09T10:00:00+00:00"}
+    assert has_new_activity(report.pr, state) is False
+
+
+def test_has_new_activity_repeat_sighting_missing_last_seen_at_returns_false() -> None:
+    """If the prior record exists but lacks last_seen_at (schema corruption,
+    not normal v3 shape), the cutoff is None and we conservatively return
+    False — one missed `*` flag, but save_state writes a proper last_seen_at
+    on the next run, so the next audit recovers automatically.
+
+    Note: we do NOT fall back to global last_audit_at here. Mixing per-PR and
+    global cutoffs in the same record would conflate two different semantics
+    and produce surprising results for users; the conservative behavior is to
+    treat a corrupted record as "no cutoff."
+    """
+    report = _make_report(updated_at="2026-05-11T07:00:00Z")
+    state = {
+        "last_audit_at": "2026-05-09T10:00:00+00:00",
+        "prs": {report.pr.url: {"comment_count": 5}},  # missing last_seen_at
+    }
+    assert has_new_activity(report.pr, state) is False
 
 
 # ---------------------------------------------------------------------------

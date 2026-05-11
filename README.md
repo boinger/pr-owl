@@ -33,11 +33,12 @@ Recently closed
 └──────────────┴─────────────────────┴──────────────────────────────┴──────┴─────────┴────────────┘
 ```
 
-The `💬` column shows the total comment count (issue comments + review events)
-for each PR. A `*` suffix marks PRs with new activity since your last audit.
-The first time you run `pr-owl audit` it establishes the baseline; subsequent
-runs flag any changes. See the [Comment tracking](#comment-tracking)
-section for details on how the state file works.
+The `💬` column shows the total comment count for each PR. A `*` flag marks
+PRs with any new activity (comments, reviews, force-pushes, label changes)
+since your last audit. The first time you run `pr-owl audit` it establishes
+the baseline; subsequent runs flag any changes. See the
+[Activity tracking](#activity-tracking) section for details on how the state
+file works.
 
 The `Open` column shows days since the PR was created. Combined with `Updated`
 (last activity), it surfaces PRs that look alive but have been open for
@@ -119,7 +120,7 @@ pr-owl audit --workers 1
 # Debug logging
 pr-owl audit --verbose
 
-# See new-comment deltas without marking them as seen
+# See new-activity flags without marking them as seen
 pr-owl audit --peek
 
 # Show PRs closed in the last 7 days
@@ -132,20 +133,22 @@ pr-owl audit --closed-since 2026-04-01
 # Suppress the recently-closed table
 pr-owl audit --no-closed
 
-# Skip the comment-tracking state file entirely (dry run)
+# Skip the activity-tracking state file entirely (dry run)
 pr-owl audit --no-state
 
 # Print the state file location
 pr-owl state path
 ```
 
-## Comment tracking
+## Activity tracking
 
-`pr-owl audit` remembers comment counts between runs in a small JSON file at
-`$XDG_STATE_HOME/pr-owl/seen.json` (defaults to `~/.local/state/pr-owl/seen.json`
-on Linux/macOS). On each run, the `New` column flags PRs that have gained
-issue comments or review activity since your previous audit. The deltas are
-auto-marked as seen on the next normal `pr-owl audit` run.
+`pr-owl audit` remembers each PR's last-seen timestamp in a small JSON file
+at `$XDG_STATE_HOME/pr-owl/seen.json` (defaults to
+`~/.local/state/pr-owl/seen.json` on Linux/macOS). On each run, the `💬`
+column flags (with `*`) PRs whose `updated_at` is strictly later than the
+cutoff — that catches any PR-level activity since the previous audit:
+comments, reviews, review-thread replies, force-pushes, label changes. The
+flag is auto-marked as seen on the next normal `pr-owl audit` run.
 
 If you want to glance at activity without marking it seen, use `--peek` —
 it loads the state and shows deltas but does not save. Useful when you might
