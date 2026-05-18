@@ -45,7 +45,7 @@ Write JSON to temp file (NEVER dump to terminal), then summarize to yourself:
 pr-owl audit --json 2>/dev/null > /tmp/pr-owl-audit.json && echo "Audit saved"
 ```
 
-Then use the Read tool to read `/tmp/pr-owl-audit.json`. The JSON is an object with `"open"` and `"closed"` arrays. Parse `data["open"]` to build the fix plan. The `"closed"` array shows recently resolved PRs (informational, no action needed).
+Then use the Read tool to read `/tmp/pr-owl-audit.json`. The JSON is an object with `"open"` and `"closed"` arrays. Parse `data["open"]` to build the fix plan. The `"closed"` array lists PRs that closed **since the user's previous `pr-owl audit` run** — it is state-relative, not calendar-relative. Earlier runs consume the closed events, so an empty `"closed"` array does NOT mean nothing closed in recent calendar time; it means nothing has closed since the last audit. Informational, no fix action needed.
 
 **Before processing the fix plan, check for new activity.** Each report in `data["open"]` has a `has_new_activity` boolean populated against the user's last `pr-owl audit` run. Any PR where `has_new_activity` is `true` has feedback (comments, reviews, force-pushes, label changes) the user has not yet seen since their previous audit. Also check `data["closed"]` for recently closed PRs and mention them. List those PRs to the user FIRST, with their URLs, before starting the fix workflow:
 
@@ -60,6 +60,8 @@ This is non-blocking — proceed with the fix workflow after surfacing it. The p
 If `data["closed"]` is non-empty, also render a brief closed-PR summary table using the same column-source-of-truth principle (see `print_closed_table` in `output.py`).
 
 **Activity-flag phrasing rule (applies to all prose summaries):** `*` in the table means *new activity since last audit* — could be a comment, review, force-push, or label change. `X*` means *X total comments AND new activity*. The `*` is a flag, not a count, and it doesn't tell you what kind of activity. When summarizing in prose, never say "X new comments" — say "X comments, new activity since last audit" or "new activity" (without conflating count and flag). Look at the actual PR (via gh CLI or web) to see what specifically changed.
+
+**Closed-table phrasing rule (applies to all prose summaries):** The "Recently closed" / `data["closed"]` table is *state-relative, not calendar-relative*. It shows PRs closed since the user's last `pr-owl audit` run, NOT closures in recent calendar time. When summarizing in prose, never say "no recently closed" or "no recent merges" — say "no closures since last audit" or "no new closures since last run." If the user asks about a closure that isn't in the table (e.g., "what about #1234 that merged this morning?"), the previous audit already consumed it; suggest `pr-owl audit --closed-since 1d` (or `7d`, `2w`, `1m`) to widen the window without re-mutating state when paired with `--peek`.
 
 Then present a brief summary of what you found and what you're about to do.
 
@@ -203,6 +205,8 @@ After showing the table, briefly summarize what needs attention and offer to fix
 
 **Activity-flag phrasing rule:** in the rendered table, `*` means *new activity since last audit* (comments, reviews, force-pushes, or label changes — the column shows comment count but the `*` flag covers any activity). `X*` means *X comments AND new activity since last audit*. When summarizing in prose, never say "X new comments" — say "X comments, new activity since last audit" or just "new activity". Look at the actual PR to see what changed. Same rule applies to Fix Mode summaries.
 
+**Closed-table phrasing rule:** the "Recently closed" table is *state-relative, not calendar-relative*. It shows PRs closed since the user's previous `pr-owl audit` run, NOT closures in recent calendar time. When summarizing in prose, never say "no recently closed" or "no recent merges" — say "no closures since last audit" or "no new closures since last run." If the table is absent and the user asks about a closure they expected to see (e.g., a PR that merged earlier today), the previous audit already consumed it; suggest `pr-owl audit --closed-since 1d` (or `7d`, `2w`, `1m`) to widen the window. Pair with `--peek` to avoid re-mutating state.
+
 ---
 
 ## Details Mode
@@ -220,7 +224,7 @@ pr-owl audit --details 2>&1
 - JSON goes to stdout, table/details go to stderr.
 - `headRepository.nameWithOwner` is always empty from `gh pr view`. The JSON uses `headRepositoryOwner.login` + `headRepository.name` to construct `head_repo`.
 - **Activity tracking fields**: Each report includes `comment_count` (current total comments, sourced from GitHub's GraphQL `totalCommentsCount` — the canonical number used in /pulls and notifications) plus `has_new_activity` (boolean: True iff the PR's `updated_at` is strictly after the relevant cutoff — per-PR `last_seen_at` for repeat sightings, global `last_audit_at` for first sightings). The cutoff is recorded in `~/.local/state/pr-owl/seen.json` and auto-marked as seen on each `pr-owl audit` run that does not pass `--peek` or `--no-state`. Use `has_new_activity` to surface unread activity before starting any fix workflow (see Fix Mode Step 1). The flag covers any PR-level activity (comments, reviews, force-pushes, labels) — it's NOT just comments. The `new_comments` field is deprecated (always 0) and retained one release for backward compat. State schema is v3.
-- **Recently closed PRs**: The audit automatically shows a "Recently closed" table with PRs that closed since the last audit. Each entry has `disposition` (MERGED/CLOSED), `days_open`, `review_count`, and `closed_at`. The `--json` output is now `{"open": [...], "closed": [...]}` (breaking change from the old bare array).
+- **Recently closed PRs**: The audit automatically shows a "Recently closed" table with PRs that closed since the last audit. The label is *state-relative, not calendar-relative* — "recently" means "since the user's previous audit run," not "in the past N days." If the user asks about a closure that's not in the table, the previous audit already consumed it; suggest `--closed-since 1d` (or `7d`, `2w`, `1m`) to widen. Each entry has `disposition` (MERGED/CLOSED), `days_open`, `review_count`, and `closed_at`. The `--json` output is now `{"open": [...], "closed": [...]}` (breaking change from the old bare array).
 - **--closed-since**: Override the default time window for closed PRs. Accepts `7d`, `2w`, `1m` (30 days), or ISO date. Use `--no-closed` to suppress the closed table entirely.
 - **--peek**: read-only audit. Loads state, computes deltas, shows them, but does NOT update state. Use when you only want to glance at activity without marking it seen.
 - **--no-state**: skip state I/O entirely. Use for dry runs or when you don't want to touch the state file.
