@@ -24,7 +24,7 @@ uv tool install --from git+https://github.com/boinger/pr-owl.git pr-owl
 
 ## Mode Detection
 
-- **"fix"**, **"fix my PRs"**, **"rebase"**, **"upstream"**, **"conflicts"**, **"sync"**, **"up to date"** → **Fix mode**
+- **"fix"**, **"fix my PRs"**, **"rebase"**, **"upstream"**, **"conflicts"**, **"sync"**, **"up to date"**, **"sign"**, **"signing"**, **"signed commits"**, **"unsigned"** → **Fix mode**
 - **"audit"**, **"check"**, **"status"** → **Audit mode**
 - **"details"** → **Details mode**
 - Ambiguous → **Audit mode**
@@ -67,7 +67,7 @@ Then present a brief summary of what you found and what you're about to do.
 
 ### Step 2: For each non-ready PR, fix it
 
-Process in this order: BEHIND first, then CONFLICTS/CI_FAILING, then report BLOCKED.
+Process in this order: BEHIND first, then CONFLICTS/CI_FAILING, then SIGNING_REQUIRED (only on a requirement signal + explicit approval — see below), then report BLOCKED.
 
 **BEHIND** (remote, no clone needed):
 
@@ -113,7 +113,81 @@ gh run view <run_id> -R <repo> --log-failed 2>&1 | tail -30
   ```
 - If logs show real test failures (assertion errors, lint errors, type errors) → report to user with the specific failures. Don't re-run blindly.
 
-**BLOCKED** (reviews): report status. Can't force reviews.
+**SIGNING_REQUIRED** (commits unsigned AND a maintainer/branch-protection requires signing): rewrite the branch to add SSH/GPG signatures, then force-push. This is the **opposite** of BEHIND's safe merge-mode — it rewrites SHAs and force-pushes, so it is **never automatic**: run only on a requirement signal + explicit user approval.
+
+> Note: commit *signature* (SSH/GPG) is a different thing from DCO *sign-off* (a `Signed-off-by` trailer, fixed by `rebase --signoff`, surfaced via give-back's `dco_required`). A red **DCO** check is NOT a signing signal — do not route it here.
+
+**1. Detect — branch on `.reason`, NOT the `.verified` boolean.** The boolean collapses states that need different fixes. Per authored commit:
+```bash
+gh api repos/<head_repo>/commits/<sha> --jq '.commit.verification.reason'
+```
+| reason | meaning | remedy |
+|--------|---------|--------|
+| `valid` | signed + verified | none |
+| `unsigned` | no signature on the object | **this routine** (rebase -S -f) |
+| `unknown_key` / `not_signing_key` | signed, key not registered as a *signing* key | **setup, not a rewrite** — register the signing key (rewriting re-signs with the same key → still unverified). Hand off to give-back / the registration steps below. |
+| `unverified_email` / `bad_email` / `no_user` | signed, committer email isn't a verified account identity | **setup, not a rewrite** — fix the email/identity |
+| `gpgverify_error` / `gpgverify_unavailable` | transient verification-service blip | retry/ignore — do NOT surface as a signature problem |
+| `invalid` / `expired_key` / `malformed_signature` / … | real signature problem | surface for human; don't auto-remediate |
+
+Only `reason==unsigned` warrants the force-push rewrite. The signed-but-unverified reasons are the auth-key-vs-signing-key footgun class — a rewrite there pays the force-push/approval cost to reproduce the same unverified state.
+
+**2. Trigger (on-demand only)** — a `reason==unsigned` commit is the necessary condition; act only with a corroborating *requirement* signal:
+- **(a) maintainer asks** — a comment requesting signing (surfaced via `has_new_activity`; confirm with the user).
+- **(b-ii) direct check signal** — `mergeStateStatus` BLOCKED with a failing/blocking required check whose context matches the **signature-specific** pattern `/gpg|signature|ssh.?sign|signed.?commit|commit.?sign|verify.?sign/i`. **Highest confidence.** Do NOT require checks-green here. Exclude `dco` and bare `sign`/`verif` (a red DCO check is a sign-off fix, not signing; bare tokens false-match `image-signing-scan`/`verify-build`).
+- **(b-i) inferred protection signal** — `mergeStateStatus` BLOCKED + all checks green + reviews approved + no other apparent blocker (the invisible `required_signatures` mode mints no check). **Lowest confidence:** surface to the user as *"signing is the LIKELY blocker, unconfirmed — can't read the upstream's protection rules,"* never as fact (CODEOWNERS / unresolved threads / required-linear-history also yield BLOCKED). Bad path if wrong: force-push → approval dismissed → signing wasn't it → churn + still blocked.
+- **Never auto-sweep** unsigned branches.
+
+**3. Preconditions** (clone needed):
+- Signing active in the clone: `git -C <clone> config --get commit.gpgsign` = `true`.
+- Key registered as a *signing* key: `gh api user/ssh_signing_keys --jq '.[].title'` (needs only `read:ssh_signing_key`; works with the default token). If absent → it's a setup gap (see registration steps below), not a rewrite.
+- ssh-agent has the key, matched by **fingerprint** (not comment grep):
+  ```bash
+  FP=$(ssh-keygen -lf <signing_key>.pub | awk '{print $2}'); ssh-add -l | grep -q "$FP" || echo "run: ssh-add <signing_key>"
+  ```
+- **Pre-batch liveness test-sign** (fail fast before rewriting N branches): gate clean first, then sign a throwaway detached commit and assert a `gpgsig` header:
+  ```bash
+  git -C <clone> status --porcelain   # must be empty, else stash/skip
+  git -C <clone> checkout --detach
+  git -C <clone> commit --allow-empty -S -m "signing pipeline test"
+  git -C <clone> cat-file commit HEAD | grep -q '^gpgsig' && echo "signing OK" || echo "NOT SIGNED — fix agent/config"
+  git -C <clone> checkout -           # orphan the test commit
+  ```
+
+**4. Per branch** (every command `git -C <clone>`):
+```bash
+git -C <clone> status --porcelain                       # SAFETY: empty, else stash/skip
+ORIG=$(git -C <clone> rev-parse --abbrev-ref HEAD)      # restore at end
+git -C <clone> fetch <upstream_remote> <base>
+git -C <clone> fetch <push_remote> <head>
+git -C <clone> checkout -B <head> <push_remote>/<head>  # pin rebase input to fetched tip
+git -C <clone> rebase -S -f <upstream_remote>/<base>   # -f (--force-rebase) is REQUIRED: a plain `rebase -S` NO-OPS on a branch already current with base ("up to date") and leaves commits UNSIGNED; -f forces replay+sign. Harmless on behind branches (they replay anyway). ORIG_HEAD/range-diff/--force-if-includes all still behave.
+#   conflicts: trivial only → add + --continue; non-trivial → rebase --abort, checkout "$ORIG", surface
+# human checkpoint — authored commits must show '=' (only dropped sync-merges differ):
+git -C <clone> range-diff "$(git -C <clone> merge-base ORIG_HEAD <upstream_remote>/<base>)..ORIG_HEAD" "<upstream_remote>/<base>..HEAD"
+git -C <clone> push --force-with-lease --force-if-includes <push_remote> <head>
+git -C <clone> checkout "$ORIG"
+```
+- `--force-with-lease --force-if-includes` together is the safe rebase-then-force idiom — bare `--force-with-lease` is a no-op right after a `fetch` (the lease compares against the just-moved tracking ref).
+
+**5. Verify on the FORK** (not upstream — base repo can 404 until ref propagation):
+```bash
+for sha in $(git -C <clone> rev-list <upstream_remote>/<base>..HEAD); do
+  gh api repos/<head_repo>/commits/$sha --jq '.commit.verification.reason'   # expect: valid
+done
+```
+- Do NOT verify locally with `%G?` / `git verify-commit` — both need `gpg.ssh.allowedSignersFile` and false-fail on valid sigs. The `gpgsig`-header check (step 3) is the local liveness proof; trust verification is the fork API.
+
+**6. Approval handling:** the rewrite changes SHAs → may dismiss an approval. After push, check `gh pr view <n> -R <repo> --json reviewDecision`. If it **held**, just comment that you rewrote to sign (no content change). If **dismissed**, comment + re-request. Don't reflexively re-request — many repos don't dismiss on push.
+
+**Registration steps** (when a key isn't registered as a *signing* key — the `unknown_key`/`not_signing_key` remedy, a setup fix, NOT a rewrite):
+```bash
+gh ssh-key add <key>.pub --type signing --title "<name> (signing)"   # needs admin:ssh_signing_key
+#   if it 404s on scope: GITHUB_TOKEN= gh auth refresh -h github.com -s admin:ssh_signing_key  (then retry; clear GITHUB_TOKEN if an env token shadows the OAuth one)
+#   or register via web UI: https://github.com/settings/ssh/new  (Key type = Signing Key)
+```
+
+**Side effect:** a signing rebase also clears BEHIND (it rebases onto the base). **Activity note:** the force-push shows as a bare `*` (activity, no comment) on the next audit — expected self-inflicted activity, not maintainer feedback.
 
 ### Step 3: Verify
 
@@ -156,6 +230,7 @@ Also read `<clone_path>/.give-back/brief.md` for commit format conventions.
 Use this context to:
 - **Enrich reporting**: "PR #57 (for pallets/flask#1234)" instead of just "PR #57"
 - **Respect DCO**: if `dco_required` is true, ensure rebase preserves Signed-off-by
+- **Respect signing**: if `brief.md` notes the repo requires signed commits (give-back records this as "may require") and the PR has `reason==unsigned` commits, that's corroborating context for the SIGNING_REQUIRED path above — still confirm with a real requirement signal (maintainer ask or blocked-merge) before any rewrite.
 - **Run post-rebase tests**: use `test_command` from context if available
 - **Follow conventions**: use commit format from the brief during conflict resolution
 
