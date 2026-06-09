@@ -15,7 +15,7 @@ from pr_owl import __version__, gh
 from pr_owl.checker import check_pr
 from pr_owl.discovery import discover_closed_prs, discover_prs, filter_stale
 from pr_owl.exceptions import GhAuthError, GhNotFoundError, PrOwlError, StateError
-from pr_owl.models import ClosedPRInfo, HealthReport, MergeStatus
+from pr_owl.models import ClosedPRInfo, HealthReport, MergeStatus, PRInfo
 from pr_owl.output import (
     console,
     print_closed_table,
@@ -104,6 +104,25 @@ def _enrich_closed_prs(
                 future.result()
             except (PrOwlError, KeyError, json.JSONDecodeError, AttributeError, TypeError, ValueError):
                 pass  # non-fatal; PR keeps review_count=0
+
+
+def _collect_reports(prs: list[PRInfo], workers: int) -> list[HealthReport]:
+    """Run check_pr across prs concurrently and collect health reports.
+
+    One failed check never aborts the audit: per-PR exceptions are logged and
+    recorded as an UNKNOWN report so the PR still appears in output.
+    """
+    reports: list[HealthReport] = []
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        future_to_pr = {executor.submit(check_pr, pr): pr for pr in prs}
+        for future in as_completed(future_to_pr):
+            pr = future_to_pr[future]
+            try:
+                reports.append(future.result())
+            except (PrOwlError, KeyError, json.JSONDecodeError, AttributeError, TypeError) as exc:
+                logger.warning("Failed to check %s#%d: %s", pr.repo, pr.number, exc)
+                reports.append(HealthReport(pr=pr, status=MergeStatus.UNKNOWN, error=str(exc)))
+    return reports
 
 
 def _retry_unknown_reports(
@@ -332,33 +351,19 @@ def audit(
 
     # Check health (concurrent) — only when there are open PRs
     reports: list[HealthReport] = []
-    has_unknowns = False
     audit_start = time.monotonic()
 
     if prs:
         effective_workers = max(1, min(workers, len(prs)))
-
-        with ThreadPoolExecutor(max_workers=effective_workers) as executor:
-            future_to_pr = {executor.submit(check_pr, pr): pr for pr in prs}
-            for future in as_completed(future_to_pr):
-                pr = future_to_pr[future]
-                try:
-                    report = future.result()
-                    reports.append(report)
-                    if report.mergeable == "UNKNOWN":
-                        has_unknowns = True
-                except (PrOwlError, KeyError, json.JSONDecodeError, AttributeError, TypeError) as exc:
-                    logger.warning("Failed to check %s#%d: %s", pr.repo, pr.number, exc)
-                    reports.append(HealthReport(pr=pr, status=MergeStatus.UNKNOWN, error=str(exc)))
-
+        reports = _collect_reports(prs, effective_workers)
         # Retry PRs where GitHub returned UNKNOWN mergeable state
-        if has_unknowns:
-            _retry_unknown_reports(
-                reports,
-                workers=effective_workers,
-                audit_start=audit_start,
-                json_output=json_output,
-            )
+        # (no-op when there are none — the helper early-returns)
+        _retry_unknown_reports(
+            reports,
+            workers=effective_workers,
+            audit_start=audit_start,
+            json_output=json_output,
+        )
 
     # Annotate comment deltas (safe even when reports is empty)
     _annotate_activity_flag(reports, state)
